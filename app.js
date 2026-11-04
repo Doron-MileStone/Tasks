@@ -199,6 +199,7 @@ async function sync(manual) {
       S.data.tasks = res.tasks || [];
       S.data.categories = (res.categories && res.categories.length) ? res.categories : DEFAULT_CATS;
       S.data.aiEnabled = !!res.aiEnabled;
+      S.data.aiProvider = res.aiProvider || '';
       S.data.sheetUrl = res.sheetUrl || '';
       S.data.lastSync = new Date().toISOString();
       S.ui.syncError = '';
@@ -537,7 +538,7 @@ async function sendAI(text) {
   S.chat.push({ id: uid(), role: 'user', text });
   if (!S.data.aiEnabled) {
     S.chat.push({ id: uid(), role: 'assistant', error: true,
-      text: 'העוזר עוד לא מופעל. צריך להוסיף מפתח Claude בשרת (ANTHROPIC_API_KEY ב-Script Properties) ואז לסנכרן. ההוראות בקובץ README.' });
+      text: 'העוזר עוד לא מופעל. צריך להוסיף בשרת מפתח GEMINI_API_KEY (או ANTHROPIC_API_KEY) ב-Script Properties ואז לסנכרן. ההוראות בקובץ README.' });
     persistChat(); render(); scrollChat(); return;
   }
   S.ui.aiBusy = true;
@@ -550,7 +551,7 @@ async function sendAI(text) {
       actions, status: actions.length ? 'pending' : null });
   } catch (err) {
     const msg = err.message === 'network' ? 'אין חיבור כרגע. נסה שוב כשתחזור לרשת.'
-      : err.message === 'ai_not_configured' ? 'העוזר לא מופעל בשרת (חסר ANTHROPIC_API_KEY).'
+      : err.message === 'ai_not_configured' ? 'העוזר לא מופעל בשרת (חסר מפתח AI).'
       : 'משהו השתבש: ' + err.message;
     S.chat.push({ id: uid(), role: 'assistant', text: msg, error: true });
   } finally {
@@ -669,7 +670,7 @@ function viewSettings() {
       <div><span>מצב</span><b>${!configured() ? 'לא מחובר' : S.ui.syncError ? 'שגיאה' : 'מחובר'}</b></div>
       <div><span>סנכרון אחרון</span><b>${esc(lastText)}</b></div>
       <div><span>שינויים שממתינים</span><b>${S.outbox.length}</b></div>
-      <div><span>עוזר AI</span><b>${S.data.aiEnabled ? 'פעיל' : 'כבוי'}</b></div>
+      <div><span>עוזר AI</span><b>${S.data.aiEnabled ? 'פעיל' + (S.data.aiProvider ? ' (' + (S.data.aiProvider === 'gemini' ? 'Gemini' : 'Claude') + ')' : '') : 'כבוי'}</b></div>
       <div><span>משימות</span><b>${S.data.tasks.length}</b></div>
       ${S.ui.syncError && configured() ? `<p class="hint">שגיאה אחרונה: ${esc(S.ui.syncError)}</p>` : ''}
       <div class="btn-row">
