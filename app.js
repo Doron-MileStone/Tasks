@@ -40,7 +40,10 @@ const ICONS = {
   heart: '<path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z"/>',
   pulse: '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
   star: '<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
-  tag: '<path d="M20 12l-8 8-9-9V3h8z"/><circle cx="7.5" cy="7.5" r="1.5"/>'
+  tag: '<path d="M20 12l-8 8-9-9V3h8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'
 };
 
 function icon(name, size = 20, stroke = 2, color = 'currentColor') {
@@ -70,6 +73,62 @@ function dateLabel(s) {
   if (diff < -1 && diff > -7) return 'לפני ' + (-diff) + ' ימים';
   return d.getDate() + ' ' + MONTHS[d.getMonth()];
 }
+const DAY_SHORT = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'];
+const weekdayOf = (s) => parseYmd(s).getDay();
+const isRepeating = (t) => !!(t && t.repeat && t.repeat.type);
+
+/** התאריך הבא של משימה חוזרת – אחרי max(התאריך שלה, היום). זהה ללוגיקה בשרת. */
+function nextOcc(rep, date, today) {
+  const base = date && date > today ? date : today;
+  if (rep.type === 'interval') return addDays(base, Math.max(1, rep.n || 1));
+  if (rep.type === 'weekly') {
+    for (let k = 1; k <= 7; k++) { const c = addDays(base, k); if (rep.days.includes(weekdayOf(c))) return c; }
+    return addDays(base, 7);
+  }
+  if (rep.type === 'monthly') {
+    const b = parseYmd(base);
+    for (let i = 0; i < 3; i++) {
+      const y = b.getFullYear() + Math.floor((b.getMonth() + i) / 12), m = (b.getMonth() + i) % 12;
+      const last = new Date(y, m + 1, 0).getDate();
+      const c = ymd(new Date(y, m, Math.min(rep.dom, last)));
+      if (c > base) return c;
+    }
+  }
+  return addDays(base, 1);
+}
+/** המופע הראשון (כולל היום) – כשמגדירים חזרה למשימה חדשה. */
+function occursOn(rep, day) {
+  if (rep.type === 'interval') return true;
+  if (rep.type === 'weekly') return rep.days.includes(weekdayOf(day));
+  if (rep.type === 'monthly') {
+    const d = parseYmd(day); const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    return d.getDate() === Math.min(rep.dom, last);
+  }
+  return true;
+}
+function firstOcc(rep, from) {
+  return occursOn(rep, from) ? from : nextOcc(rep, from, from);
+}
+function repeatLabel(rep) {
+  if (!rep || !rep.type) return '';
+  if (rep.type === 'weekly') return rep.days.length === 7 ? 'כל יום' : 'כל ' + rep.days.map((d) => DAY_SHORT[d]).join(', ');
+  if (rep.type === 'monthly') return 'כל חודש ב-' + rep.dom;
+  return rep.n === 1 ? 'כל יום' : 'כל ' + rep.n + ' ימים';
+}
+/** מה קורה כשמסמנים משימה: חוזרת – עוברת לתאריך הבא; רגילה – מסומנת כהושלמה. */
+function completeLocal(t) {
+  const next = clone(t);
+  if (isRepeating(t)) {
+    next.lastDone = { at: new Date().toISOString(), from: t.date || todayStr() };
+    next.date = nextOcc(t.repeat, t.date, todayStr());
+    next.remindAt = '';
+    next.done = false; next.doneAt = '';
+    return { next, rolled: true };
+  }
+  next.done = true; next.doneAt = new Date().toISOString();
+  return { next, rolled: false };
+}
+
 function longDate(s) {
   const d = parseYmd(s);
   return 'יום ' + DAYS[d.getDay()] + ', ' + d.getDate() + ' ' + MONTHS_FULL[d.getMonth()];
@@ -195,12 +254,15 @@ async function sync(manual) {
   try {
     await flush();
     if (!S.outbox.length) {
-      const res = await api('bootstrap');
+      const res = await api('bootstrap', { apiUrl: S.cfg.apiUrl, appUrl: location.origin + location.pathname });
       S.data.tasks = res.tasks || [];
       S.data.categories = (res.categories && res.categories.length) ? res.categories : DEFAULT_CATS;
       S.data.aiEnabled = !!res.aiEnabled;
       S.data.aiProvider = res.aiProvider || '';
       S.data.sheetUrl = res.sheetUrl || '';
+      S.data.ntfyTopic = res.ntfyTopic || '';
+      S.data.ntfyServer = res.ntfyServer || 'https://ntfy.sh';
+      S.data.remindersActive = !!res.remindersActive;
       S.data.lastSync = new Date().toISOString();
       S.ui.syncError = '';
       persistData();
@@ -239,19 +301,68 @@ function removeTask(id) {
 function toggleTask(id) {
   const t = findTask(id);
   if (!t) return;
-  const next = clone(t);
-  next.done = !t.done;
-  next.doneAt = next.done ? new Date().toISOString() : '';
+  const prev = clone(t);
+  if (t.done) {
+    const n = clone(t); n.done = false; n.doneAt = ''; saveTask(n); render(); return;
+  }
+  const { next, rolled } = completeLocal(t);
   saveTask(next);
   render();
-  if (next.done) toast('סומן כהושלם', 'ביטול', () => { const b = clone(findTask(id)); b.done = false; b.doneAt = ''; saveTask(b); render(); });
+  toast(rolled ? 'בוצע · הבא: ' + dateLabel(next.date) : 'סומן כהושלם', 'ביטול', () => { saveTask(clone(prev)); render(); });
+}
+
+/** ביטול סימון "בוצע" מתוך רשימת המשימות שהושלמו. */
+function undoComplete(id) {
+  const t = findTask(id);
+  if (!t) return;
+  const n = clone(t);
+  if (t.done) { n.done = false; n.doneAt = ''; }
+  else if (t.lastDone) { if (t.lastDone.from) n.date = t.lastDone.from; n.lastDone = ''; }
+  else return;
+  saveTask(n);
+  render();
+  toast('הוחזר לרשימה');
+}
+
+function recentlyDone(list) {
+  const since = Date.now() - 7 * 86400000;
+  const today = todayStr();
+  const at = (t) => t.done ? t.doneAt : (t.lastDone && t.lastDone.at);
+  return list.filter((t) => {
+    if (t.done) return !(t.date === today) && t.doneAt && Date.parse(t.doneAt) >= since;
+    return isRepeating(t) && t.lastDone && t.lastDone.at && Date.parse(t.lastDone.at) >= since;
+  }).sort((a, b) => (at(b) || '').localeCompare(at(a) || ''));
+}
+
+function doneAgo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const day = dateLabel(ymd(d));
+  return (day === 'היום' || day === 'אתמול' ? day : day) + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function doneRow(t) {
+  const c = cat(t.category);
+  const rolled = !t.done && t.lastDone;
+  const when = doneAgo(t.done ? t.doneAt : t.lastDone.at);
+  return `<div class="task done" data-open="${esc(t.id)}">
+    <button class="check" data-undone="${esc(t.id)}" style="--c:${c.color}" aria-label="החזרה לרשימה: ${esc(t.title)}"><i>${icon('check', 14, 3, '#fff')}</i></button>
+    <div class="task-body">
+      <span class="task-title">${esc(t.title)}</span>
+      <div class="meta">
+        <span class="cat-chip" style="background:${c.tint};color:${c.ink}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</span>
+        <span class="meta-item">${icon('check', 13)}בוצע ${esc(when)}</span>
+        ${rolled ? `<span class="meta-item">${icon('repeat', 13)}הבא: ${esc(dateLabel(t.date))}</span>` : ''}
+      </div>
+    </div>
+  </div>`;
 }
 
 function newTaskDraft(extra) {
   return Object.assign({
     id: uid(), title: '', category: S.ui.filter !== 'all' ? S.ui.filter : (S.data.categories[0] || DEFAULT_CATS[0]).id,
     date: S.ui.view === 'today' ? todayStr() : '', time: '', priority: 'mid', done: false, doneAt: '',
-    calendar: false, reminder: 15, eventId: '', notes: '', _new: true
+    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', _new: true
   }, extra || {});
 }
 
@@ -322,6 +433,8 @@ function taskRow(t, mode) {
         <span class="cat-chip" style="background:${c.tint};color:${c.ink}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</span>
         ${when ? `<span class="meta-item ${late ? 'late' : ''}">${icon('clock', 13)}${esc(when)}</span>` : ''}
         ${t.calendar && t.date ? `<span class="meta-item">${icon('cal', 13)}ביומן</span>` : ''}
+        ${isRepeating(t) ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(t.repeat))}</span>` : ''}
+        ${t.remind && t.remind !== 'none' && !t.done ? `<span class="meta-item">${icon('bell', 13)}${t.remindAt && t.remindAt.d === today ? esc(t.remindAt.t) : ''}${t.remind === 'nag' ? ' נודניק' : ''}</span>` : ''}
         ${t.priority === 'high' && !t.done ? '<span class="badge-high">חשוב</span>' : ''}
       </div>
     </div>
@@ -379,6 +492,13 @@ function viewToday() {
       <div class="suggest-row"><span class="mini-mark">${icon('gear', 15)}</span><p>כדי לסנכרן עם Google Sheets ו-Google Calendar צריך לחבר את השרת. בינתיים המשימות נשמרות בטלפון.</p></div>
       <div class="btn-row"><a class="btn" href="#settings">לחיבור</a></div></div>` : '';
 
+  const doneList = recentlyDone(shown);
+  const doneBlock = doneList.length ? `<section class="section">
+      <button class="done-toggle" data-action="toggle-done" aria-expanded="${!!S.ui.showDone}">
+        ${icon('check', 16)}<span>הושלמו ב-7 הימים האחרונים</span><span class="n">${doneList.length}</span>
+        <span class="chev ${S.ui.showDone ? 'open' : ''}">${icon('back', 16)}</span></button>
+      ${S.ui.showDone ? doneList.map(doneRow).join('') + '<p class="hint" style="padding:0 4px">לחיצה על ה-✓ מחזירה את המשימה לרשימה.</p>' : ''}
+    </section>` : '';
   const body = section('באיחור', overdue, 'list', true) + section('היום', todays, 'today') +
     section('מחר והלאה', later, 'list') + section('ללא תאריך', nodate, 'list');
 
@@ -404,6 +524,7 @@ function viewToday() {
     <div class="chips" role="group" aria-label="סינון לפי קטגוריה">${chips}</div>
     ${suggest}
     ${body || `<div class="empty"><b>אין משימות${f !== 'all' ? ' בקטגוריה הזו' : ''}</b>אפשר להוסיף עם הכפתור + או לכתוב לעוזר.</div>`}
+    ${doneBlock}
   </div>`;
 }
 
@@ -468,7 +589,9 @@ function describeAction(a) {
     const when = [dateLabel(a.date), a.time].filter(Boolean).join(', ') || 'בלי תאריך';
     return `<div class="preview-row"><span class="kind">משימה חדשה</span><b>${esc(a.title)}</b>
       <div class="meta"><span class="cat-chip" style="background:${c.tint};color:${c.ink}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</span>
-      <span>${esc(when)}</span>${a.calendar && a.date ? `<span class="meta-item">${icon('cal', 13)}ביומן${a.time ? ' + תזכורת' : ''}</span>` : ''}
+      <span>${esc(when)}</span>${a.calendar && a.date ? `<span class="meta-item">${icon('cal', 13)}ביומן</span>` : ''}
+      ${a.repeat && a.repeat.type ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(a.repeat))}</span>` : ''}
+      ${a.remind && a.remind !== 'none' && a.time ? `<span class="meta-item">${icon('bell', 13)}${a.remind === 'nag' ? 'נודניק' : 'תזכורת'}</span>` : ''}
       ${a.priority === 'high' ? '<span class="badge-high">חשוב</span>' : ''}</div></div>`;
   }
   const title = ex ? ex.title : '(משימה שנמחקה)';
@@ -481,6 +604,8 @@ function describeAction(a) {
   if (a.category != null) ch.push('קטגוריה: ' + cat(a.category).name);
   if (a.priority != null) ch.push('עדיפות: ' + ({ low: 'נמוכה', mid: 'רגילה', high: 'גבוהה' }[a.priority]));
   if (a.calendar != null) ch.push(a.calendar ? 'להוסיף ליומן' : 'להוריד מהיומן');
+  if (a.repeat) ch.push(a.repeat.type ? repeatLabel(a.repeat) : 'בלי חזרה');
+  if (a.remind != null) ch.push({ none: 'בלי תזכורת', notify: 'תזכורת', nag: 'נודניק' }[a.remind] || '');
   return `<div class="preview-row"><span class="kind">עדכון</span><b>${esc(title)}</b><div class="meta">${esc(ch.join(' · ') || 'ללא שינוי')}</div></div>`;
 }
 
@@ -534,7 +659,16 @@ async function sendAI(text) {
   text = (text || '').trim();
   if (!text || S.ui.aiBusy) return;
   if (!configured()) { toast('צריך קודם לחבר את השרת בהגדרות'); return; }
-  const history = S.chat.slice(-6).map((m) => ({ role: m.role, text: m.text }));
+  // היסטוריה נקייה: בלי הודעות שגיאה, ועם מה שבאמת קרה לכל הצעה
+  const history = S.chat.filter((m) => !m.error).slice(-8).map((m) => {
+    let text = m.text;
+    if (m.role === 'assistant' && m.actions && m.actions.length) {
+      text += m.status === 'applied' ? ' [המשתמש אישר: ' + (m.summary || 'בוצע') + ']'
+        : m.status === 'cancelled' ? ' [המשתמש ביטל, לא בוצע כלום]'
+        : m.status === 'undone' ? ' [בוצע ואז בוטל]' : ' [ממתין לאישור]';
+    }
+    return { role: m.role, text };
+  });
   S.chat.push({ id: uid(), role: 'user', text });
   if (!S.data.aiEnabled) {
     S.chat.push({ id: uid(), role: 'assistant', error: true,
@@ -574,9 +708,11 @@ function applyActions(msgId) {
     if (a.type === 'create') {
       const t = newTaskDraft({
         title: a.title, category: a.category || 'personal', date: a.date || '', time: a.time || '',
-        priority: a.priority || 'mid', calendar: !!(a.calendar && a.date), reminder: a.time ? 15 : '', notes: a.notes || ''
+        priority: a.priority || 'mid', calendar: !!(a.calendar && a.date), reminder: a.time ? 15 : '', notes: a.notes || '',
+        repeat: a.repeat && a.repeat.type ? a.repeat : '', remind: a.remind && a.time ? a.remind : 'none'
       });
       delete t._new;
+      if (isRepeating(t) && (!t.date || !occursOn(t.repeat, t.date))) t.date = firstOcc(t.repeat, t.date && t.date > todayStr() ? t.date : todayStr());
       saveTask(t); undo.push({ type: 'delete', id: t.id }); created++; if (t.calendar) onCal++;
       return;
     }
@@ -585,9 +721,11 @@ function applyActions(msgId) {
     const prev = clone(ex);
     if (a.type === 'delete') { removeTask(a.id); prev.eventId = ''; undo.push({ type: 'restore', task: prev }); deleted++; return; }
     const next = clone(ex);
-    if (a.type === 'complete') { next.done = true; next.doneAt = new Date().toISOString(); completed++; }
+    if (a.type === 'complete') { saveTask(completeLocal(ex).next); undo.push({ type: 'restore', task: prev }); completed++; return; }
     else {
-      ['title', 'category', 'date', 'time', 'priority', 'calendar', 'notes'].forEach((k) => { if (a[k] != null) next[k] = a[k]; });
+      ['title', 'category', 'date', 'time', 'priority', 'calendar', 'notes', 'remind'].forEach((k) => { if (a[k] != null) next[k] = a[k]; });
+      if (a.repeat) next.repeat = a.repeat.type ? a.repeat : '';
+      if (next.remind !== 'none' && !next.time) next.remind = 'none';
       if (next.calendar && next.time && next.reminder === '') next.reminder = 15;
       updated++;
     }
@@ -682,6 +820,12 @@ function viewSettings() {
       </div>
     </div>
     <div class="card">
+      <div class="suggest-row"><span class="mini-mark">${icon('bell', 15)}</span>
+        <p><b>תזכורות ב-ntfy</b><br>${S.data.remindersActive ? 'פעילות. ' : 'עוד לא הופעלו – צריך להריץ פעם אחת את setupReminders בשרת. '}${S.data.ntfyTopic ? 'הערוץ שצריך להירשם אליו באפליקציית ntfy:' : ''}</p></div>
+      ${S.data.ntfyTopic ? `<div class="topic-row"><code dir="ltr">${esc(S.data.ntfyTopic)}</code><button class="icon-btn" data-action="copy-topic" aria-label="העתקת שם הערוץ">${icon('copy', 18)}</button></div>` : ''}
+      ${S.data.ntfyTopic ? '<div class="btn-row"><button class="btn" data-action="test-notify">שליחת התראת בדיקה</button></div>' : ''}
+    </div>
+    <div class="card">
       <p class="hint">כדי להתקין: בתפריט של Chrome (שלוש הנקודות) ← "הוספה למסך הבית" / "התקנת אפליקציה".</p>
       <div class="btn-row"><button class="btn danger" data-action="clear-chat">ניקוי היסטוריית העוזר</button></div>
     </div>
@@ -713,6 +857,9 @@ function captureDraft() {
     if (g('f-date')) sh.draft.date = g('f-date').value;
     if (g('f-time')) sh.draft.time = g('f-time').value;
     if (g('f-reminder')) sh.draft.reminder = g('f-reminder').value === '' ? '' : Number(g('f-reminder').value);
+    const r = sh.draft.repeat;
+    if (r && r.type === 'monthly' && g('f-dom')) r.dom = Math.min(31, Math.max(1, Number(g('f-dom').value) || 1));
+    if (r && r.type === 'interval' && g('f-interval')) r.n = Math.min(365, Math.max(1, Number(g('f-interval').value) || 1));
   } else if (sh.type === 'category') {
     if (g('c-name')) sh.draft.name = g('c-name').value;
   }
@@ -753,18 +900,56 @@ function taskSheet(sh) {
         <input class="input" id="f-time" type="time" value="${esc(d.time)}" aria-label="שעה" ${d.date ? '' : 'disabled'}>
       </div></div>
     <div class="field"><span class="label">עדיפות</span><div class="seg">${prios}</div></div>
+    ${repeatSection(d)}
+    ${remindSection(d)}
     <div class="box">
       <div class="switch-row">
         <span class="cal-ico">${icon('cal', 18)}</span>
         <span class="switch-text"><b>הוספה ל-Google Calendar</b><span>${d.date ? 'עם התראה של היומן בטלפון' : 'צריך לבחור תאריך'}</span></span>
         <button type="button" class="switch ${d.calendar && d.date ? 'on' : ''}" data-action="toggle-cal" role="switch" aria-checked="${!!(d.calendar && d.date)}" aria-label="הוספה ליומן" ${d.date ? '' : 'disabled'}></button>
       </div>
-      ${d.calendar && d.date && d.time ? `<div class="sub-row"><label for="f-reminder">תזכורת</label><select id="f-reminder">${reminders}</select></div>` : ''}
+      ${d.calendar && d.date && d.time ? `<div class="sub-row"><label for="f-reminder">התראה ביומן</label><select id="f-reminder">${reminders}</select></div>` : ''}
     </div>
     <div class="field"><label class="label" for="f-notes">הערות</label>
       <textarea class="input" id="f-notes" rows="2">${esc(d.notes || '')}</textarea></div>
     <button class="btn primary block" data-action="save-task">${d._new ? 'שמירת משימה' : 'שמירת שינויים'}</button>
     ${d._new ? '' : `<button class="btn danger" data-action="delete-task">מחיקת המשימה</button>`}`;
+}
+
+function repeatSection(d) {
+  const r = d.repeat || {};
+  const types = [['', 'לא חוזר'], ['weekly', 'ימים בשבוע'], ['monthly', 'חודשי'], ['interval', 'כל X ימים']];
+  let extra = '';
+  if (r.type === 'weekly') {
+    extra = `<div class="wd-row">${DAY_SHORT.map((l, i) => `<button type="button" class="${r.days.includes(i) ? 'on' : ''}" data-wd="${i}" aria-pressed="${r.days.includes(i)}">${l}</button>`).join('')}
+      <button type="button" class="wd-all ${r.days.length === 7 ? 'on' : ''}" data-wd="all">כל יום</button></div>`;
+  } else if (r.type === 'monthly') {
+    extra = `<div class="inline-num"><label for="f-dom">בכל</label><input class="input" id="f-dom" type="number" inputmode="numeric" min="1" max="31" value="${r.dom}"><span>לחודש</span></div>`;
+  } else if (r.type === 'interval') {
+    extra = `<div class="inline-num"><label for="f-interval">כל</label><input class="input" id="f-interval" type="number" inputmode="numeric" min="1" max="365" value="${r.n}"><span>ימים</span></div>`;
+  }
+  return `<div class="field"><span class="label">${icon('repeat', 14)} חזרה</span>
+    <div class="seg seg4">${types.map(([v, l]) => `<button type="button" class="${(r.type || '') === v ? 'on' : ''}" data-repeat="${v}" aria-pressed="${(r.type || '') === v}">${l}</button>`).join('')}</div>
+    ${extra}
+    ${r.type ? '<p class="hint">כשמסמנים "בוצע", המשימה עוברת לבד לתאריך הבא.</p>' : ''}</div>`;
+}
+
+function remindSection(d) {
+  const today = todayStr();
+  const opts = [['none', 'בלי'], ['notify', 'התראה'], ['nag', 'נודניק']];
+  const on = d.remind && d.remind !== 'none';
+  let extra = '';
+  if (on && !d.time) extra = '<p class="hint warn">התזכורת יוצאת בשעת המשימה – צריך לבחור שעה למעלה.</p>';
+  else if (on) {
+    const override = d.remindAt && d.remindAt.d === today ? d.remindAt.t : '';
+    extra = `<p class="hint">${d.remind === 'nag' ? 'התראה ב-ntfy בשעת המשימה, וחוזרת כל 5 דקות עד שמסמנים "בוצע" או "הפסק להיום" (עד שעתיים).' : 'התראה אחת ב-ntfy בשעת המשימה.'}</p>
+      ${d.date === today || override ? `<div class="sub-row box"><label for="f-today-time">רק היום, בשעה אחרת</label>
+        <span class="today-time"><input id="f-today-time" type="time" value="${esc(override)}">${override ? '<button type="button" class="btn ghost" data-action="clear-today">ביטול</button>' : ''}</span></div>` : ''}`;
+  }
+  if (on && !configured()) extra += '<p class="hint warn">תזכורות עובדות רק כשהאפליקציה מחוברת לשרת.</p>';
+  return `<div class="field"><span class="label">${icon('bell', 14)} תזכורת בטלפון</span>
+    <div class="seg">${opts.map(([v, l]) => `<button type="button" class="${(d.remind || 'none') === v ? 'on' : ''}" data-remind="${v}" aria-pressed="${(d.remind || 'none') === v}">${l}</button>`).join('')}</div>
+    ${extra}</div>`;
 }
 
 function categorySheet(sh) {
@@ -785,7 +970,12 @@ function saveFromSheet() {
   const d = clone(S.ui.sheet.draft);
   d.title = (d.title || '').trim();
   if (!d.title) { toast('צריך לכתוב מה המשימה'); const el = document.getElementById('f-title'); if (el) el.focus(); return; }
+  if (isRepeating(d) && (!d.date || !occursOn(d.repeat, d.date))) {
+    const today = todayStr();
+    d.date = firstOcc(d.repeat, d.date && d.date > today ? d.date : today);
+  }
   if (!d.date) { d.time = ''; d.calendar = false; }
+  if (d.remind && d.remind !== 'none' && !d.time) { toast('לתזכורת צריך לבחור שעה'); return; }
   const isNew = d._new;
   delete d._new;
   delete d.calendarTouched;
@@ -831,6 +1021,7 @@ document.addEventListener('click', (e) => {
   let t;
 
   if ((t = el('[data-toggle]'))) { e.stopPropagation(); toggleTask(t.dataset.toggle); return; }
+  if ((t = el('[data-undone]'))) { e.stopPropagation(); undoComplete(t.dataset.undone); return; }
   if ((t = el('[data-filter]'))) { S.ui.filter = t.dataset.filter; render(); return; }
   if ((t = el('[data-goto-cat]'))) { S.ui.filter = t.dataset.gotoCat; go('today'); return; }
   if ((t = el('[data-suggest]'))) { sendAI(t.dataset.suggest); return; }
@@ -840,6 +1031,21 @@ document.addEventListener('click', (e) => {
   if ((t = el('[data-cat]'))) { captureDraft(); S.ui.sheet.draft.category = t.dataset.cat; renderSheet(); return; }
   if ((t = el('[data-prio]'))) { captureDraft(); S.ui.sheet.draft.priority = t.dataset.prio; renderSheet(); return; }
   if ((t = el('[data-color]'))) { captureDraft(); S.ui.sheet.draft.color = t.dataset.color; renderSheet(); return; }
+  if ((t = el('[data-repeat]'))) {
+    captureDraft(); const d = S.ui.sheet.draft; const type = t.dataset.repeat;
+    const base = d.date || todayStr();
+    d.repeat = !type ? '' : type === 'weekly' ? { type, days: [weekdayOf(base)] }
+      : type === 'monthly' ? { type, dom: parseYmd(base).getDate() } : { type, n: 3 };
+    if (d.repeat && !d.date) d.date = firstOcc(d.repeat, todayStr());
+    renderSheet(); return;
+  }
+  if ((t = el('[data-wd]'))) {
+    captureDraft(); const r = S.ui.sheet.draft.repeat; const v = t.dataset.wd;
+    if (v === 'all') r.days = r.days.length === 7 ? [weekdayOf(S.ui.sheet.draft.date || todayStr())] : [0, 1, 2, 3, 4, 5, 6];
+    else { const n = Number(v); r.days = r.days.includes(n) ? (r.days.length > 1 ? r.days.filter((x) => x !== n) : r.days) : r.days.concat(n).sort(); }
+    renderSheet(); return;
+  }
+  if ((t = el('[data-remind]'))) { captureDraft(); S.ui.sheet.draft.remind = t.dataset.remind; renderSheet(); return; }
   if ((t = el('[data-quick-date]'))) {
     captureDraft(); const d = S.ui.sheet.draft; d.date = t.dataset.quickDate;
     if (!d.date) { d.time = ''; d.calendar = false; }
@@ -862,6 +1068,16 @@ document.addEventListener('click', (e) => {
       case 'toggle-cal': captureDraft(); S.ui.sheet.draft.calendar = !S.ui.sheet.draft.calendar; S.ui.sheet.draft.calendarTouched = true;
         if (S.ui.sheet.draft.calendar && S.ui.sheet.draft.reminder === '') S.ui.sheet.draft.reminder = 15;
         renderSheet(); return;
+      case 'toggle-done': S.ui.showDone = !S.ui.showDone; render(); return;
+      case 'clear-today': captureDraft(); S.ui.sheet.draft.remindAt = ''; renderSheet(); return;
+      case 'test-notify':
+        api('testNotify').then(() => toast('נשלחה התראת בדיקה ל-ntfy'))
+          .catch((err) => toast(err.message === 'reminders_not_set_up' ? 'צריך קודם להריץ setupReminders בשרת' : 'שגיאה: ' + err.message));
+        return;
+      case 'copy-topic':
+        (navigator.clipboard ? navigator.clipboard.writeText(S.data.ntfyTopic) : Promise.reject())
+          .then(() => toast('הועתק')).catch(() => toast(S.data.ntfyTopic));
+        return;
       case 'new-category': openSheet({ type: 'category', draft: { name: '', color: EXTRA_COLORS[6] } }); return;
       case 'save-category': saveCategory(); return;
       case 'sync': sync(true); return;
@@ -893,12 +1109,16 @@ function focusAI() { const i = document.getElementById('ai-input'); if (i) i.foc
 
 document.addEventListener('change', (e) => {
   if (!S.ui.sheet || S.ui.sheet.type !== 'task') return;
+  if (e.target.id === 'f-today-time') {
+    captureDraft();
+    S.ui.sheet.draft.remindAt = e.target.value ? { d: todayStr(), t: e.target.value } : '';
+    renderSheet(); return;
+  }
+  if (e.target.id === 'f-dom' || e.target.id === 'f-interval') { captureDraft(); return; }
   if (e.target.id === 'f-date' || e.target.id === 'f-time') {
     const d = S.ui.sheet.draft;
-    const hadTime = !!d.time;
     captureDraft();
     if (!d.date) { d.time = ''; d.calendar = false; }
-    if (e.target.id === 'f-time' && d.time && !hadTime && !d.calendarTouched) { d.calendar = true; if (d.reminder === '') d.reminder = 15; }
     renderSheet();
   }
 });

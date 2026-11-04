@@ -256,3 +256,27 @@ textarea.input { height: auto; min-height: 80px; padding: 12px 14px; resize: ver
   box-shadow: 0 6px 20px rgba(0,0,0,.2); display: flex; gap: 12px; align-items: center;
 }
 .toast button { border: 0; background: transparent; color: #93C5FD; font-weight: 600; padding: 4px; }
+
+/* ---------- repeat & reminders ---------- */
+.label svg { vertical-align: -2px; }
+.seg.seg4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.seg.seg4 button { font-size: 12.5px; padding: 0 2px; }
+.wd-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.wd-row button { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); font-size: 14px; }
+.wd-row button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.wd-row .wd-all { width: auto; border-radius: 999px; padding: 0 12px; font-size: 13px; }
+.inline-num { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.inline-num .input { width: 90px; height: 44px; text-align: center; }
+.hint.warn { color: #B45309; }
+.today-time { display: inline-flex; align-items: center; gap: 4px; }
+.today-time input { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; background: var(--card); }
+.sub-row.box { padding: 8px 12px; }
+.topic-row { display: flex; align-items: center; gap: 8px; }
+.topic-row code { flex: 1; background: var(--soft); border-radius: 10px; padding: 12px; font-size: 14px; overflow-wrap: anywhere; }
+
+/* ---------- completed ---------- */
+.done-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 48px; padding: 0 12px; border: 1px dashed #D1D5DB; border-radius: 14px; background: transparent; color: var(--muted); font-size: 14px; text-align: right; }
+.done-toggle span:nth-child(2) { flex: 1; }
+.done-toggle .n { color: var(--muted-2); font-size: 13px; }
+.done-toggle .chev { display: inline-flex; transform: rotate(90deg); transition: transform .15s; }
+.done-toggle .chev.open { transform: rotate(-90deg); }
