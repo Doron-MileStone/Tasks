@@ -552,11 +552,14 @@ async function sendAI(text) {
   } catch (err) {
     const msg = err.message === 'network' ? 'אין חיבור כרגע. נסה שוב כשתחזור לרשת.'
       : err.message === 'ai_not_configured' ? 'העוזר לא מופעל בשרת (חסר מפתח AI).'
+      : err.message.indexOf('ai_busy') === 0 ? 'שירות ה-AI עמוס כרגע. נסה שוב בעוד דקה – ההודעה שלך עדיין למטה.'
       : 'משהו השתבש: ' + err.message;
     S.chat.push({ id: uid(), role: 'assistant', text: msg, error: true });
+    S.ui.retryText = text;
   } finally {
     S.ui.aiBusy = false;
     persistChat(); render(); scrollChat();
+    if (S.ui.retryText) { const i = document.getElementById('ai-input'); if (i) i.value = S.ui.retryText; S.ui.retryText = ''; }
   }
 }
 
