@@ -52,7 +52,11 @@ const ICONS = {
   flow: '<rect x="3" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/><path d="M6.5 8v4.5a2 2 0 0 0 2 2h7v1.5"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   par: '<path d="M8 4v16M16 4v16"/>',
-  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'
+  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
+  chain: '<path d="M9 17H7a5 5 0 0 1 0-10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>'
 };
 
 function icon(name, size = 20, stroke = 2, color = 'currentColor') {
@@ -166,6 +170,8 @@ const S = {
   data: load('tm.data', { tasks: [], categories: DEFAULT_CATS, aiEnabled: false, lastSync: null, sheetUrl: '' }),
   outbox: load('tm.outbox', []),
   chat: load('tm.chat', []),
+  seen: load('tm.seen', {}),
+  comments: load('tm.comments', {}),
   ui: {
     view: 'today', filter: 'all', sheet: null, aiBusy: false, syncing: false, syncError: '',
     dismissedSuggest: load('tm.dismissed', ''), recording: false
@@ -177,6 +183,11 @@ const persistData = () => save('tm.data', S.data);
 const persistOutbox = () => save('tm.outbox', S.outbox.map((o) => Object.assign({}, o, { inflight: false })));
 const persistChat = () => save('tm.chat', S.chat.slice(-40));
 const configured = () => !!(S.cfg.apiUrl && S.cfg.token);
+
+const me = () => S.data.me || 'owner';
+const otherId = () => (me() === 'partner' ? 'owner' : 'partner');
+const nameOf = (u) => (u === me() ? 'אני' : u === 'both' ? 'שנינו' : ((S.data.names || {})[u] || (u === 'partner' ? 'בת הזוג' : 'בן הזוג')));
+const isShared = (catId) => { const c = S.data.categories.find((x) => x.id === catId); return !!(c && c.shared); };
 
 function cat(id) {
   return S.data.categories.find((c) => c.id === id) ||
@@ -276,6 +287,10 @@ async function sync(manual) {
       S.data.telegramBot = res.telegramBot || '';
       S.data.telegramConnected = !!res.telegramConnected;
       S.data.health = res.health || null;
+      S.data.me = res.me || 'owner';
+      S.data.names = res.names || {};
+      S.data.partnerEnabled = !!res.partnerEnabled;
+      S.data.commentStats = res.commentStats || {};
       S.data.lastSync = new Date().toISOString();
       S.ui.syncError = '';
       persistData();
@@ -288,6 +303,7 @@ async function sync(manual) {
   } finally {
     S.ui.syncing = false;
     render();
+    openPending();
   }
 }
 
@@ -299,6 +315,15 @@ function saveTask(task) {
   task.updatedAt = new Date().toISOString();
   if (!task.createdAt) task.createdAt = task.updatedAt;
   if (!task.date) task.calendar = false;
+  const before = (findTask(task.id) || {}).related || [];
+  const now = task.related || [];
+  // הקישור דו-כיווני: מעדכנים גם את המשימות האחרות בטלפון (השרת עושה אותו דבר אצלו)
+  S.data.tasks.forEach((o) => {
+    if (o.id === task.id) return;
+    const has = (o.related || []).includes(task.id);
+    if (now.includes(o.id) && !has) o.related = (o.related || []).concat(task.id);
+    if (!now.includes(o.id) && before.includes(o.id) && has) o.related = o.related.filter((x) => x !== task.id);
+  });
   const i = S.data.tasks.findIndex((t) => t.id === task.id);
   if (i >= 0) S.data.tasks[i] = task; else S.data.tasks.push(task);
   persistData();
@@ -307,6 +332,7 @@ function saveTask(task) {
 
 function removeTask(id) {
   S.data.tasks = S.data.tasks.filter((t) => t.id !== id);
+  S.data.tasks.forEach((o) => { if ((o.related || []).includes(id)) o.related = o.related.filter((x) => x !== id); });
   persistData();
   enqueue({ action: 'deleteTask', id });
 }
@@ -321,7 +347,9 @@ function toggleTask(id) {
   const { next, rolled } = completeLocal(t);
   saveTask(next);
   render();
-  toast(rolled ? 'בוצע · הבא: ' + dateLabel(next.date) : 'סומן כהושלם', 'ביטול', () => { saveTask(clone(prev)); render(); });
+  const openRel = (t.related || []).map(findTask).filter((x) => x && !x.done).length;
+  toast((rolled ? 'בוצע · הבא: ' + dateLabel(next.date) : 'סומן כהושלם') + (openRel ? ` · ${openRel} קשורות עדיין פתוחות` : ''),
+    'ביטול', () => { saveTask(clone(prev)); render(); });
 }
 
 /** ביטול סימון "בוצע" מתוך רשימת המשימות שהושלמו. */
@@ -566,11 +594,133 @@ async function suggestSteps() {
   }
 }
 
+/* ---------------- שיחה בתוך משימה ---------------- */
+
+const statsOf = (id) => (S.data.commentStats || {})[id];
+function isUnread(id) {
+  const st = statsOf(id);
+  return !!(st && st.last && st.lastAuthor !== me() && st.last > (S.seen[id] || ''));
+}
+function markSeen(id) {
+  const st = statsOf(id);
+  const last = [(st && st.last) || ''].concat((S.comments[id] || []).map((c) => c.at)).sort().pop();
+  if (last && last !== S.seen[id]) { S.seen[id] = last; save('tm.seen', S.seen); }
+}
+const unreadCount = () => Object.keys(S.data.commentStats || {}).filter(isUnread).length;
+const hhmm = (iso) => { const d = new Date(iso); return dateLabel(ymd(d)) + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+
+async function loadComments(id) {
+  if (!configured() || !navigator.onLine) return;
+  try {
+    const res = await api('comments', { taskId: id });
+    S.comments[id] = res.comments || [];
+    const list = S.comments[id];
+    if (list.length) {
+      const last = list[list.length - 1];
+      S.data.commentStats = S.data.commentStats || {};
+      S.data.commentStats[id] = { n: list.length, last: last.at, lastAuthor: last.author, lastText: last.text.slice(0, 120) };
+    }
+    save('tm.comments', S.comments);
+    if (S.ui.sheet && S.ui.sheet.draft.id === id) { captureDraft(); renderSheet(); }
+  } catch (err) { /* נשאר עם מה ששמור בטלפון */ }
+}
+
+function sendComment() {
+  captureDraft();
+  const sh = S.ui.sheet; const id = sh.draft.id;
+  const text = (sh.commentInput || '').trim();
+  if (!text) return;
+  if (!configured()) { toast('השיחה עובדת רק כשהאפליקציה מחוברת לשרת'); return; }
+  const c = { id: uid(), taskId: id, author: me(), text, at: new Date().toISOString(), pending: true };
+  (S.comments[id] = S.comments[id] || []).push(c);
+  S.data.commentStats = S.data.commentStats || {};
+  const st = S.data.commentStats[id] || { n: 0 };
+  S.data.commentStats[id] = { n: st.n + 1, last: c.at, lastAuthor: c.author, lastText: text.slice(0, 120) };
+  S.seen[id] = c.at; save('tm.seen', S.seen);
+  save('tm.comments', S.comments);
+  sh.commentInput = '';
+  enqueue({ action: 'addComment', taskId: id, text, id: c.id });
+  flush().then(() => { c.pending = false; save('tm.comments', S.comments); if (S.ui.sheet === sh) renderSheet(); });
+  renderSheet();
+  const el = document.getElementById('f-comment'); if (el) el.focus();
+}
+
+function chatSection(sh) {
+  const d = sh.draft;
+  if (d._new) return '';
+  const list = S.comments[d.id] || [];
+  const shared = isShared(d.category);
+  const msgs = list.map((c) => {
+    const mine = c.author === me();
+    return `<div class="cmt ${mine ? 'mine' : 'theirs'}">
+      ${mine ? '' : `<span class="cmt-who">${esc(nameOf(c.author))}</span>`}
+      <div class="cmt-bubble">${esc(c.text)}</div>
+      <span class="cmt-time">${esc(hhmm(c.at))}${c.pending ? ' · נשלח…' : ''}</span></div>`;
+  }).join('');
+  return `<div class="field" id="chat-section"><span class="label">${icon('chat', 14)} ${shared ? 'שיחה על המשימה' : 'הערות ושיחה'}</span>
+    <div class="cmts">${msgs || `<p class="hint">${shared ? 'אפשר לשאול כאן שאלות על המשימה – ' + esc(nameOf(otherId())) + ' תקבל/יקבל הודעה.' : 'עדיין אין הודעות.'}</p>`}</div>
+    <div class="att-add">
+      <input class="input" id="f-comment" type="text" placeholder="כתיבת הודעה…" value="${esc(sh.commentInput || '')}" enterkeyhint="send" aria-label="הודעה">
+      <button type="button" class="btn primary" data-action="send-comment" aria-label="שליחה">${icon('send', 18)}</button>
+    </div></div>`;
+}
+
+function viewThreads() {
+  const stats = S.data.commentStats || {};
+  const ids = Object.keys(stats).filter((id) => findTask(id)).sort((a, b) => stats[b].last.localeCompare(stats[a].last));
+  const cards = ids.map((id) => {
+    const t = findTask(id); const st = stats[id]; const c = cat(t.category);
+    return `<button class="thread ${isUnread(id) ? 'unread' : ''}" data-open-thread="${esc(id)}">
+      <span class="thread-top"><b>${esc(t.title)}</b><small>${esc(hhmm(st.last))}</small></span>
+      <span class="thread-msg">${esc(st.lastAuthor === me() ? 'אני' : nameOf(st.lastAuthor))}: ${esc(st.lastText)}</span>
+      <span class="meta"><span class="cat-chip" style="background:${c.tint};color:${c.ink}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</span>
+        <span class="meta-item">${icon('chat', 13)}${st.n}</span>${isUnread(id) ? '<span class="badge-new">חדש</span>' : ''}</span>
+    </button>`;
+  }).join('');
+  return `<div class="screen">
+    <div class="head"><div class="head-text"><span class="h-sub">שיחות לפי משימה</span><h1 class="h-title">שיחות</h1></div>
+      <a class="icon-btn" href="#today" aria-label="חזרה">${icon('back', 22)}</a></div>
+    ${cards || `<div class="empty"><b>אין עדיין שיחות</b>פותחים משימה וכותבים בחלק "שיחה על המשימה".${S.data.partnerEnabled ? '' : ' כשתחברו משתמש נוסף, השיחות יהיו משותפות.'}</div>`}
+  </div>`;
+}
+
+/* ---------------- משימות קשורות ---------------- */
+
+function relatedSection(sh) {
+  const d = sh.draft;
+  const rel = (d.related || []).map(findTask).filter(Boolean);
+  const q = (sh.relQuery || '').trim();
+  const matches = q ? S.data.tasks.filter((t) => t.id !== d.id && !(d.related || []).includes(t.id) &&
+    t.title.includes(q)).slice(0, 6) : [];
+  return `<div class="field"><span class="label">${icon('chain', 14)} משימות קשורות</span>
+    ${rel.length ? `<div class="rel-list">${rel.map((t) => `<div class="rel-row ${t.done ? 'done' : ''}">
+        <button type="button" class="rel-open" data-open-related="${esc(t.id)}">
+          <span class="dot" style="background:${cat(t.category).color}"></span><span class="rel-title">${esc(t.title)}</span>
+          <small>${t.done ? '✓ בוצע' : esc([dateLabel(t.date), t.time].filter(Boolean).join(' ') || 'פתוחה')}</small></button>
+        <button type="button" class="att-x" data-unlink="${esc(t.id)}" aria-label="ביטול הקישור">${icon('close', 14, 2.2)}</button></div>`).join('')}</div>` : ''}
+    <input class="input" id="f-rel" type="search" placeholder="חיפוש משימה לקישור…" value="${esc(sh.relQuery || '')}" aria-label="חיפוש משימה לקישור" autocomplete="off">
+    ${matches.length ? `<div class="rel-matches">${matches.map((t) => `<button type="button" data-link-task="${esc(t.id)}">${icon('plus', 14, 2.2)}${esc(t.title)}</button>`).join('')}</div>` : q ? '<p class="hint">לא נמצאו משימות</p>' : ''}
+    <button type="button" class="btn outline" data-action="companion" style="align-self:flex-start">${icon('plus', 16, 2.2)}משימה נלווית חדשה</button>
+  </div>`;
+}
+
+/** שומר את המשימה הפתוחה בשקט (לפני מעבר למשימה אחרת). מחזיר false אם אי אפשר. */
+function quietSaveCurrent() {
+  captureDraft();
+  const d = clone(S.ui.sheet.draft);
+  if (!d.title.trim()) { toast('קודם לתת שם למשימה'); return false; }
+  delete d._new; delete d.calendarTouched;
+  if (!d.date) { d.time = ''; d.calendar = false; }
+  S.ui.sheet.saved = true;
+  saveTask(d);
+  return true;
+}
+
 function newTaskDraft(extra) {
   return Object.assign({
     id: uid(), title: '', category: S.ui.filter !== 'all' ? S.ui.filter : (S.data.categories[0] || DEFAULT_CATS[0]).id,
     date: S.ui.view === 'today' ? todayStr() : '', time: '', priority: 'mid', done: false, doneAt: '',
-    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', attachments: [], kind: 'task', items: [], _new: true
+    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', attachments: [], kind: 'task', items: [], assignee: '', related: [], _new: true
   }, extra || {});
 }
 
@@ -578,19 +728,32 @@ function newTaskDraft(extra) {
 /* ניתוב ורינדור                                                       */
 /* ================================================================== */
 
-const VIEWS = ['today', 'calendar', 'ai', 'categories', 'settings'];
+const VIEWS = ['today', 'calendar', 'ai', 'categories', 'settings', 'threads'];
 function route() {
+  const m = location.hash.match(/^#task=(.+)$/);
+  if (m) { S.ui.pendingOpen = decodeURIComponent(m[1]); history.replaceState(null, '', location.pathname + '#today'); }
   const v = (location.hash || '#today').slice(1);
   S.ui.view = VIEWS.includes(v) ? v : 'today';
   render();
   window.scrollTo(0, S.ui.view === 'ai' ? document.body.scrollHeight : 0);
+  openPending();
+}
+
+/** פותח משימה מקישור (#task=...), גם אם היא תגיע רק אחרי סנכרון. */
+function openPending() {
+  const id = S.ui.pendingOpen;
+  if (!id) return;
+  const t = findTask(id);
+  if (!t) return;
+  S.ui.pendingOpen = null;
+  openSheet({ type: 'task', draft: clone(t), focusChat: true });
 }
 function go(view) { if (location.hash !== '#' + view) location.hash = view; else route(); }
 
 function render() {
   const v = S.ui.view;
   const html = v === 'today' ? viewToday() : v === 'calendar' ? viewCalendar() : v === 'ai' ? viewAI() :
-    v === 'categories' ? viewCategories() : viewSettings();
+    v === 'categories' ? viewCategories() : v === 'threads' ? viewThreads() : viewSettings();
   document.getElementById('view').innerHTML = html;
   renderNav();
   document.getElementById('fab-slot').innerHTML = ['today', 'calendar', 'categories'].includes(v)
@@ -644,11 +807,14 @@ function taskRow(t, mode) {
         ${isRepeating(t) ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(t.repeat))}</span>` : ''}
         ${t.remind && t.remind !== 'none' && !t.done ? `<span class="meta-item">${icon('bell', 13)}${t.remindAt && t.remindAt.d === today ? esc(t.remindAt.t) : ''}${t.remind === 'nag' ? ' נודניק' : ''}</span>` : ''}
         ${t.attachments && t.attachments.length ? `<span class="meta-item">${icon('clip', 13)}${t.attachments.length}</span>` : ''}
+        ${(t.related || []).length ? `<span class="meta-item">${icon('chain', 13)}${t.related.length}</span>` : ''}
+        ${statsOf(t.id) ? `<span class="meta-item ${isUnread(t.id) ? 'unread' : ''}">${icon('chat', 13)}${statsOf(t.id).n}${isUnread(t.id) ? ' חדש' : ''}</span>` : ''}
         ${t.kind === 'list' && (t.items || []).length ? `<span class="meta-item">${icon('list', 13)}${itemsProgress(t).done}/${itemsProgress(t).total}</span>` : ''}
         ${t.kind === 'project' && (t.items || []).length ? (() => { const p = itemsProgress(t); const next = t.items.find((x) => !x.done);
           return `<span class="meta-item proj">${icon('flow', 13)}${p.done}/${p.total}${next && !t.done ? ' · הבא: ' + esc(next.text) : ''}</span>
             <span class="mini-bar" aria-hidden="true"><i style="width:${Math.round(p.done / p.total * 100)}%;background:${c.color}"></i></span>`; })() : ''}
         ${t.priority === 'high' && !t.done ? '<span class="badge-high">חשוב</span>' : ''}
+        ${isShared(t.category) && t.assignee && t.assignee !== me() ? `<span class="badge-who">${icon('users', 12)}${esc(nameOf(t.assignee))}</span>` : ''}
       </div>
     </div>
   </div>`;
@@ -688,7 +854,7 @@ function viewToday() {
   const openCount = (id) => all.filter((t) => !t.done && (id === 'all' || t.category === id || (id === 'projects' && (t.kind === 'project' || t.kind === 'list')))).length;
   const hasProj = all.some((t) => !t.done && (t.kind === 'project' || t.kind === 'list'));
   const chips = [{ id: 'all', name: 'הכול', color: '#9CA3AF' }].concat(hasProj ? [{ id: 'projects', name: 'פרויקטים ורשימות', color: '#111827' }] : []).concat(S.data.categories).map((c) =>
-    `<button class="chip ${f === c.id ? 'on' : ''}" data-filter="${esc(c.id)}" aria-pressed="${f === c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}<span class="n">${openCount(c.id)}</span></button>`).join('');
+    `<button class="chip ${f === c.id ? 'on' : ''}" data-filter="${esc(c.id)}" aria-pressed="${f === c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}${c.shared ? icon('users', 13) : ''}<span class="n">${openCount(c.id)}</span></button>`).join('');
 
   const allOverdue = all.filter((t) => !t.done && t.date && t.date < today);
   let suggest = '';
@@ -723,7 +889,10 @@ function viewToday() {
         <h1 class="h-title">היום</h1>
         <div id="status-slot">${statusHtml()}</div>
       </div>
-      <button class="icon-btn ${S.ui.syncing ? 'spin' : ''}" id="sync-btn" data-action="sync" aria-label="סנכרון">${icon('sync', 20)}</button>
+      <div class="head-btns">
+        ${S.data.partnerEnabled || Object.keys(S.data.commentStats || {}).length ? `<a class="icon-btn badge-wrap" href="#threads" aria-label="שיחות${unreadCount() ? ', ' + unreadCount() + ' חדשות' : ''}">${icon('chat', 20)}${unreadCount() ? `<span class="badge-count">${unreadCount()}</span>` : ''}</a>` : ''}
+        <button class="icon-btn ${S.ui.syncing ? 'spin' : ''}" id="sync-btn" data-action="sync" aria-label="סנכרון">${icon('sync', 20)}</button>
+      </div>
     </div>
     <button class="ai-bar" data-action="open-ai">
       <span class="ai-mark">${icon('spark', 18, 1.8)}</span>
@@ -769,11 +938,16 @@ function viewCategories() {
     const o = list.filter((t) => !t.done).length;
     const d = list.length - o;
     const pct = list.length ? Math.round(d / list.length * 100) : 0;
-    return `<button class="cat-card" data-goto-cat="${esc(c.id)}">
-      <span class="cat-icon" style="background:${c.tint};color:${c.ink}">${icon(c.icon, 22)}</span>
-      <span><b>${esc(c.name)}</b><small>${o} פתוחות · ${d} הושלמו</small></span>
-      <span class="bar" style="background:${c.tint}"><div style="width:${pct}%;background:${c.color}"></div></span>
-    </button>`;
+    const mine = (c.owner || 'owner') === me();
+    return `<div class="cat-card-wrap">
+      <button class="cat-card" data-goto-cat="${esc(c.id)}">
+        <span class="cat-icon" style="background:${c.tint};color:${c.ink}">${icon(c.icon, 22)}</span>
+        <span><b>${esc(c.name)}</b><small>${o} פתוחות · ${d} הושלמו</small>
+          ${c.shared ? `<small class="shared-tag">${icon('users', 12)}${mine ? 'משותפת עם ' + esc(nameOf(otherId())) : 'של ' + esc(nameOf(c.owner))}</small>` : ''}</span>
+        <span class="bar" style="background:${c.tint}"><div style="width:${pct}%;background:${c.color}"></div></span>
+      </button>
+      ${mine ? `<button class="cat-edit" data-edit-cat="${esc(c.id)}" aria-label="עריכת ${esc(c.name)}">${icon('edit', 16)}</button>` : ''}
+    </div>`;
   }).join('');
   return `<div class="screen">
     <div class="head">
@@ -807,7 +981,8 @@ function describeAction(a) {
       <span>${esc(when)}</span>${a.calendar && a.date ? `<span class="meta-item">${icon('cal', 13)}ביומן</span>` : ''}
       ${a.repeat && a.repeat.type ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(a.repeat))}</span>` : ''}
       ${a.remind && a.remind !== 'none' && a.time ? `<span class="meta-item">${icon('bell', 13)}${a.remind === 'nag' ? 'נודניק' : 'תזכורת'}</span>` : ''}
-      ${a.priority === 'high' ? '<span class="badge-high">חשוב</span>' : ''}</div></div>`;
+      ${a.priority === 'high' ? '<span class="badge-high">חשוב</span>' : ''}
+      ${a.assignee && a.assignee !== me() ? `<span class="badge-who">${icon('users', 12)}${esc(nameOf(a.assignee))}</span>` : ''}</div></div>`;
   }
   const title = ex ? ex.title : '(משימה שנמחקה)';
   if (a.type === 'complete') return `<div class="preview-row"><span class="kind">סימון כהושלם</span><b>${esc(title)}</b></div>`;
@@ -926,7 +1101,7 @@ function applyActions(msgId) {
         title: a.title, category: a.category || 'personal', date: a.date || '', time: a.time || '',
         priority: a.priority || 'mid', calendar: !!(a.calendar && a.date), reminder: a.time ? 15 : '', notes: a.notes || '',
         repeat: a.repeat && a.repeat.type ? a.repeat : '', remind: a.remind && a.time ? a.remind : 'none',
-        kind: a.kind || (a.addItems && a.addItems.length ? 'list' : 'task'),
+        kind: a.kind || (a.addItems && a.addItems.length ? 'list' : 'task'), assignee: a.assignee || '',
         items: (a.addItems || []).map((x) => ({ id: itemId(), text: x, done: false, par: false }))
       });
       delete t._new;
@@ -944,6 +1119,7 @@ function applyActions(msgId) {
       ['title', 'category', 'date', 'time', 'priority', 'calendar', 'notes', 'remind'].forEach((k) => { if (a[k] != null) next[k] = a[k]; });
       if (a.repeat) next.repeat = a.repeat.type ? a.repeat : '';
       if (a.kind) next.kind = a.kind;
+      if (a.assignee) next.assignee = a.assignee;
       if (a.addItems && a.addItems.length) {
         next.items = (next.items || []).concat(a.addItems.map((x) => ({ id: itemId(), text: x, done: false, par: false })));
         if (!next.kind || next.kind === 'task') next.kind = 'list';
@@ -1020,6 +1196,8 @@ function remindersCard() {
       ? `<p><b>תזכורות בטלגרם</b><br>${d.remindersActive ? 'פעילות' : 'הבדיקה כל דקה לא פעילה – הרץ שוב את setupReminders'} · מחובר ל-<bdi dir="ltr">${esc(bot)}</bdi></p>`
       : `<p><b>תזכורות בטלגרם</b><br>כמעט מוכן: פתח את <bdi dir="ltr">${esc(bot)}</bdi> בטלגרם ולחץ Start. תוך דקה הבוט יענה "מחובר".</p>`;
     if (d.telegramBot && !d.telegramConnected) body += `<div class="btn-row"><a class="btn" href="https://t.me/${esc(d.telegramBot)}" target="_blank" rel="noopener">פתיחת הבוט בטלגרם</a></div>`;
+  } else if (d.notifyChannel === 'email') {
+    body = '<p><b>תזכורות במייל</b><br>תזכורות על משימות שבאחריותך נשלחות למייל, עם כפתורים "בוצע" ו"עוד 5 דק׳".</p>';
   } else if (d.notifyChannel === 'ntfy') {
     body = `<p><b>תזכורות ב-ntfy</b><br>ערוץ: <code dir="ltr">${esc(d.ntfyTopic)}</code></p>`;
   } else {
@@ -1051,7 +1229,7 @@ function viewSettings() {
   const last = S.data.lastSync ? new Date(S.data.lastSync) : null;
   const lastText = last ? `${dateLabel(ymd(last))}, ${pad(last.getHours())}:${pad(last.getMinutes())}` : 'עוד לא';
   return `<div class="screen">
-    <div class="head"><div class="head-text"><span class="h-sub">חיבור, סנכרון ועוזר</span><h1 class="h-title">הגדרות</h1></div></div>
+    <div class="head"><div class="head-text"><span class="h-sub">${S.data.partnerEnabled && configured() ? 'מחובר בתור ' + esc((S.data.names || {})[me()] || '') : 'חיבור, סנכרון ועוזר'}</span><h1 class="h-title">הגדרות</h1></div></div>
     <form class="card" id="cfg-form">
       <div class="field">
         <label class="label" for="cfg-url">כתובת השרת (Apps Script Web App URL)</label>
@@ -1093,6 +1271,11 @@ function openSheet(sheet) {
   if (!S.ui.sheet) history.pushState({ sheet: true }, '');
   S.ui.sheet = sheet;
   renderSheet();
+  if (sheet.type === 'task' && !sheet.draft._new) {
+    markSeen(sheet.draft.id);
+    loadComments(sheet.draft.id).then(() => { if (S.ui.sheet === sheet) { markSeen(sheet.draft.id); render(); } });
+    if (sheet.focusChat) setTimeout(() => { const c = document.getElementById('chat-section'); if (c) c.scrollIntoView({ block: 'start' }); }, 80);
+  }
   setTimeout(() => { const el = document.querySelector('#sheet-slot [autofocus]'); if (el && sheet.focus) el.focus(); }, 60);
 }
 function closeSheet() {
@@ -1117,6 +1300,8 @@ function captureDraft() {
     if (g('f-time')) sh.draft.time = g('f-time').value;
     if (g('f-link')) sh.linkInput = g('f-link').value;
     if (g('f-item')) sh.itemInput = g('f-item').value;
+    if (g('f-comment')) sh.commentInput = g('f-comment').value;
+    if (g('f-rel')) sh.relQuery = g('f-rel').value;
     (sh.draft.items || []).forEach((it, i) => { const el = g('item-' + i); if (el) it.text = el.value; });
     if (g('f-reminder')) sh.draft.reminder = g('f-reminder').value === '' ? '' : Number(g('f-reminder').value);
     const r = sh.draft.repeat;
@@ -1170,6 +1355,9 @@ function taskSheet(sh) {
     </div></div>
     ${d.kind === 'list' || d.kind === 'project' ? itemsSection(sh) : ''}
     <div class="field"><span class="label">קטגוריה</span><div class="cat-grid">${cats}</div></div>
+    ${isShared(d.category) ? `<div class="field"><span class="label">${icon('users', 14)} באחריות</span><div class="seg">
+      ${[me(), otherId(), 'both'].map((u) => `<button type="button" class="${(d.assignee || me()) === u ? 'on' : ''}" data-assignee="${u}" aria-pressed="${(d.assignee || me()) === u}">${esc(nameOf(u))}</button>`).join('')}
+    </div><p class="hint">התזכורות יגיעו ל${esc((d.assignee || me()) === 'both' ? 'שניכם' : (d.assignee || me()) === me() ? 'ך' : nameOf(d.assignee))}.</p></div>` : ''}
     <div class="field"><span class="label">מתי</span>
       <div class="quick">${quick}</div>
       <div class="row2">
@@ -1190,6 +1378,8 @@ function taskSheet(sh) {
     ${attachmentsSection(sh)}
     <div class="field"><label class="label" for="f-notes">הערות</label>
       <textarea class="input" id="f-notes" rows="2">${esc(d.notes || '')}</textarea></div>
+    ${relatedSection(sh)}
+    ${chatSection(sh)}
     <button class="btn primary block" data-action="save-task">${d._new ? 'שמירת משימה' : 'שמירת שינויים'}</button>
     ${d._new ? '' : `<button class="btn danger" data-action="delete-task">מחיקת המשימה</button>`}`;
 }
@@ -1232,14 +1422,20 @@ function remindSection(d) {
 
 function categorySheet(sh) {
   const d = sh.draft;
+  const share = S.data.partnerEnabled ? `<div class="box"><div class="switch-row">
+      <span class="cal-ico">${icon('users', 18)}</span>
+      <span class="switch-text"><b>שיתוף עם ${esc(nameOf(otherId()))}</b><span>${d.shared ? 'שניכם רואים ומנהלים את המשימות בקטגוריה' : 'רק אתה רואה את הקטגוריה'}</span></span>
+      <button type="button" class="switch ${d.shared ? 'on' : ''}" data-action="toggle-share" role="switch" aria-checked="${!!d.shared}" aria-label="שיתוף"></button>
+    </div></div>` : '';
   return `<div class="grabber"></div>
-    <div class="sheet-head"><h2 id="sheet-title">קטגוריה חדשה</h2>
+    <div class="sheet-head"><h2 id="sheet-title">${d.id ? 'עריכת קטגוריה' : 'קטגוריה חדשה'}</h2>
       <button class="icon-btn" data-action="close-sheet" aria-label="סגירה">${icon('close', 18, 2.2)}</button></div>
     <div class="field"><label class="label" for="c-name">שם</label>
       <input class="input" id="c-name" type="text" value="${esc(d.name)}" autofocus autocomplete="off"></div>
     <div class="field"><span class="label">צבע</span><div class="swatches">
       ${EXTRA_COLORS.map((c) => `<button type="button" class="swatch ${d.color === c ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="צבע ${c}" aria-pressed="${d.color === c}"></button>`).join('')}
     </div></div>
+    ${share}
     <button class="btn primary block" data-action="save-category">שמירה</button>`;
 }
 
@@ -1288,14 +1484,18 @@ async function saveCategory() {
   const d = S.ui.sheet.draft;
   const name = (d.name || '').trim();
   if (!name) { toast('צריך לתת שם'); return; }
-  const c = { id: 'c-' + uid().slice(0, 8), name, color: d.color, tint: mix(d.color, 'white', 0.86), ink: mix(d.color, 'black', 0.45),
-    icon: 'tag', order: S.data.categories.length + 1 };
-  S.data.categories.push(c);
+  const prev = d.id ? S.data.categories.find((x) => x.id === d.id) : null;
+  const c = prev ? Object.assign({}, prev, { name, shared: !!d.shared }) :
+    { id: 'c-' + uid().slice(0, 8), name, color: d.color, tint: mix(d.color, 'white', 0.86), ink: mix(d.color, 'black', 0.45),
+      icon: 'tag', order: S.data.categories.length + 1, owner: me(), shared: !!d.shared };
+  if (prev && d.color !== prev.color) Object.assign(c, { color: d.color, tint: mix(d.color, 'white', 0.86), ink: mix(d.color, 'black', 0.45) });
+  if (prev) S.data.categories[S.data.categories.indexOf(prev)] = c; else S.data.categories.push(c);
   persistData();
   closeSheet();
   render();
   if (configured()) {
-    try { await api('upsertCategory', { category: c }); } catch (err) { toast('הקטגוריה נשמרה בטלפון, אבל לא בשרת'); }
+    try { await api('upsertCategory', { category: c }); if (prev && prev.shared !== c.shared) toast(c.shared ? 'הקטגוריה משותפת עכשיו' : 'השיתוף בוטל'); }
+    catch (err) { toast('הקטגוריה נשמרה בטלפון, אבל לא בשרת'); }
   }
 }
 
@@ -1321,6 +1521,11 @@ document.addEventListener('click', (e) => {
   if ((t = el('[data-toggle]'))) { e.stopPropagation(); toggleTask(t.dataset.toggle); return; }
   if ((t = el('[data-undone]'))) { e.stopPropagation(); undoComplete(t.dataset.undone); return; }
   if ((t = el('[data-filter]'))) { S.ui.filter = t.dataset.filter; render(); return; }
+  if ((t = el('[data-edit-cat]'))) {
+    const c = S.data.categories.find((x) => x.id === t.dataset.editCat);
+    if (c) openSheet({ type: 'category', draft: { id: c.id, name: c.name, color: c.color, shared: !!c.shared } });
+    return;
+  }
   if ((t = el('[data-goto-cat]'))) { S.ui.filter = t.dataset.gotoCat; go('today'); return; }
   if ((t = el('[data-suggest]'))) { sendAI(t.dataset.suggest); return; }
   if ((t = el('[data-apply]'))) { applyActions(t.dataset.apply); return; }
@@ -1343,6 +1548,18 @@ document.addEventListener('click', (e) => {
     else { const n = Number(v); r.days = r.days.includes(n) ? (r.days.length > 1 ? r.days.filter((x) => x !== n) : r.days) : r.days.concat(n).sort(); }
     renderSheet(); return;
   }
+  if ((t = el('[data-open-thread]'))) { const x = findTask(t.dataset.openThread); if (x) openSheet({ type: 'task', draft: clone(x), focusChat: true }); return; }
+  if ((t = el('[data-link-task]'))) { captureDraft(); const d = S.ui.sheet.draft; d.related = (d.related || []).concat(t.dataset.linkTask); S.ui.sheet.relQuery = ''; renderSheet(); return; }
+  if ((t = el('[data-unlink]'))) { captureDraft(); const d = S.ui.sheet.draft; d.related = (d.related || []).filter((x) => x !== t.dataset.unlink); renderSheet(); return; }
+  if ((t = el('[data-open-related]'))) {
+    const other = findTask(t.dataset.openRelated);
+    if (!other) return;
+    if (!quietSaveCurrent()) return;
+    S.ui.sheet = null;
+    openSheet({ type: 'task', draft: clone(findTask(other.id)) });
+    return;
+  }
+  if ((t = el('[data-assignee]'))) { captureDraft(); S.ui.sheet.draft.assignee = t.dataset.assignee; renderSheet(); return; }
   if ((t = el('[data-kind]'))) {
     captureDraft(); const d = S.ui.sheet.draft; d.kind = t.dataset.kind;
     if (d.kind === 'list' && !d.title.trim()) d.title = 'רשימת קניות';
@@ -1411,6 +1628,17 @@ document.addEventListener('click', (e) => {
         (navigator.clipboard ? navigator.clipboard.writeText(S.data.ntfyTopic) : Promise.reject())
           .then(() => toast('הועתק')).catch(() => toast(S.data.ntfyTopic));
         return;
+      case 'send-comment': sendComment(); return;
+      case 'companion': {
+        if (!quietSaveCurrent()) return;
+        const parent = findTask(S.ui.sheet.draft.id);
+        S.ui.sheet = null;
+        openSheet({ type: 'task', focus: true, draft: newTaskDraft({ category: parent.category, date: parent.date || '', related: [parent.id],
+          assignee: parent.assignee || '' }) });
+        toast('משימה נלווית ל"' + parent.title + '"');
+        return;
+      }
+      case 'toggle-share': captureDraft(); S.ui.sheet.draft.shared = !S.ui.sheet.draft.shared; renderSheet(); return;
       case 'new-category': openSheet({ type: 'category', draft: { name: '', color: EXTRA_COLORS[6] } }); return;
       case 'save-category': saveCategory(); return;
       case 'sync': sync(true); return;
@@ -1457,6 +1685,13 @@ document.addEventListener('change', (e) => {
   }
 });
 
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'f-rel' && S.ui.sheet) {
+    captureDraft(); renderSheet();
+    const el = document.getElementById('f-rel'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }
+});
+
 document.addEventListener('submit', (e) => {
   if (e.target.id === 'ai-form') {
     e.preventDefault();
@@ -1475,6 +1710,7 @@ document.addEventListener('submit', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'f-title') { e.preventDefault(); saveFromSheet(); }
+  if (e.key === 'Enter' && e.target.id === 'f-comment') { e.preventDefault(); sendComment(); }
   if (e.key === 'Enter' && e.target.id === 'f-item') { e.preventDefault(); const b = document.querySelector('[data-action="add-item"]'); if (b) b.click(); }
   if (e.key === 'Enter' && e.target.id === 'f-link') { e.preventDefault(); const b = document.querySelector('[data-action="add-link"]'); if (b) b.click(); }
   if (e.key === 'Escape' && S.ui.lightbox) { S.ui.lightbox = null; renderLightbox(); return; }
