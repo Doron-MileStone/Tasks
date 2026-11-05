@@ -47,7 +47,12 @@ const ICONS = {
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/>',
   clip: '<path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
-  external: '<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>'
+  external: '<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/>',
+  flow: '<rect x="3" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/><path d="M6.5 8v4.5a2 2 0 0 0 2 2h7v1.5"/>',
+  up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  par: '<path d="M8 4v16M16 4v16"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'
 };
 
 function icon(name, size = 20, stroke = 2, color = 'currentColor') {
@@ -270,6 +275,7 @@ async function sync(manual) {
       S.data.notifyChannel = res.notifyChannel || '';
       S.data.telegramBot = res.telegramBot || '';
       S.data.telegramConnected = !!res.telegramConnected;
+      S.data.health = res.health || null;
       S.data.lastSync = new Date().toISOString();
       S.ui.syncError = '';
       persistData();
@@ -462,11 +468,109 @@ function attachmentsSection(sh) {
   </div>`;
 }
 
+/* ---------------- רשימות ופרויקטים ---------------- */
+
+const itemId = () => uid().slice(0, 8);
+const itemsProgress = (t) => { const it = t.items || []; return { done: it.filter((i) => i.done).length, total: it.length }; };
+
+/** מחלק צעדים לשלבים: צעד "במקביל" מצטרף לשלב של הצעד שלפניו. */
+function flowStages(items) {
+  const stages = [];
+  (items || []).forEach((it, i) => {
+    if (it.par && stages.length) stages[stages.length - 1].push({ it, i });
+    else stages.push([{ it, i }]);
+  });
+  return stages;
+}
+
+function flowchart(items) {
+  const stages = flowStages(items);
+  if (!stages.length) return '';
+  const currentStage = stages.findIndex((st) => st.some(({ it }) => !it.done));
+  return `<div class="flow" role="list" aria-label="תרשים זרימה של הפרויקט">
+    <div class="flow-cap">התחלה</div>
+    ${stages.map((st, si) => `<div class="flow-arrow" aria-hidden="true">${icon('up', 16)}</div>
+      <div class="flow-stage">${st.map(({ it, i }) => {
+        const state = it.done ? 'done' : si === currentStage ? 'now' : 'todo';
+        return `<button type="button" role="listitem" class="flow-node ${state}" data-item-toggle="${i}" aria-pressed="${it.done}">
+          <span class="flow-num">${it.done ? icon('check', 12, 3) : i + 1}</span><span>${esc(it.text)}</span></button>`;
+      }).join('')}</div>`).join('')}
+    <div class="flow-arrow" aria-hidden="true">${icon('up', 16)}</div>
+    <div class="flow-cap ${currentStage < 0 ? 'end-done' : ''}">${currentStage < 0 ? 'הפרויקט הושלם 🎉' : 'סיום'}</div>
+  </div>`;
+}
+
+function itemsSection(sh) {
+  const d = sh.draft;
+  const items = d.items || [];
+  const isProj = d.kind === 'project';
+  const p = itemsProgress(d);
+  const rows = items.map((it, i) => `<div class="item-row ${it.done ? 'done' : ''} ${isProj && it.par ? 'par' : ''}">
+      <button type="button" class="item-check" data-item-toggle="${i}" aria-label="${it.done ? 'בטל סימון' : 'סמן'}">${it.done ? icon('check', 13, 3, '#fff') : ''}</button>
+      ${isProj ? `<span class="item-num">${i + 1}</span>` : ''}
+      <input class="item-text" id="item-${i}" value="${esc(it.text)}" aria-label="${isProj ? 'צעד' : 'פריט'} ${i + 1}">
+      ${isProj && i > 0 ? `<button type="button" class="item-btn ${it.par ? 'on' : ''}" data-item-par="${i}" aria-pressed="${!!it.par}" title="במקביל לצעד הקודם" aria-label="במקביל לצעד הקודם">${icon('par', 15)}</button>` : ''}
+      ${isProj && i > 0 ? `<button type="button" class="item-btn" data-item-up="${i}" aria-label="להזיז למעלה">${icon('up', 15)}</button>` : ''}
+      <button type="button" class="item-btn" data-item-remove="${i}" aria-label="הסרה">${icon('close', 14, 2.2)}</button>
+    </div>`).join('');
+  return `<div class="field">
+    <span class="label">${icon(isProj ? 'flow' : 'list', 14)} ${isProj ? 'צעדים' : 'פריטים'}${p.total ? ` · ${p.done}/${p.total}` : ''}</span>
+    ${isProj && items.length ? `<div class="seg seg2"><button type="button" class="${sh.flowView !== false ? 'on' : ''}" data-action="flow-view">תרשים</button><button type="button" class="${sh.flowView === false ? 'on' : ''}" data-action="list-view">עריכה</button></div>` : ''}
+    ${isProj && items.length && sh.flowView !== false ? flowchart(items) : `<div class="items">${rows}</div>`}
+    <div class="att-add">
+      <input class="input" id="f-item" type="text" placeholder="${isProj ? 'צעד חדש…' : 'פריט חדש… (Enter להוספה)'}" value="${esc(sh.itemInput || '')}" enterkeyhint="enter" aria-label="${isProj ? 'צעד חדש' : 'פריט חדש'}">
+      <button type="button" class="btn outline" data-action="add-item">${icon('plus', 16, 2.2)}הוספה</button>
+    </div>
+    <div class="btn-row" style="justify-content:flex-start">
+      ${isProj ? `<button type="button" class="btn" data-action="ai-steps" ${sh.aiSteps ? 'disabled' : ''}>${icon('spark', 16)}${sh.aiSteps ? 'חושב…' : 'הצע צעדים'}</button>` : ''}
+      ${!isProj && p.done ? '<button type="button" class="btn ghost" data-action="clear-checked">ניקוי מסומנים</button>' : ''}
+      ${!isProj && p.total ? '<button type="button" class="btn ghost" data-action="uncheck-all">ביטול כל הסימונים</button>' : ''}
+    </div>
+  </div>`;
+}
+
+/** סימון פריט/צעד: במשימה קיימת – נשמר מיד (נוח בסופר). */
+function toggleItem(i) {
+  captureDraft();
+  const sh = S.ui.sheet; const it = sh.draft.items[i];
+  if (!it) return;
+  it.done = !it.done;
+  if (!sh.draft._new) {
+    const t = clone(sh.draft); delete t._new; delete t.calendarTouched;
+    saveTask(t);
+    const p = itemsProgress(t);
+    if (p.total && p.done === p.total) toast(t.kind === 'project' ? 'כל הצעדים הושלמו! לסמן את הפרויקט כבוצע?' : 'הכול סומן ✓',
+      t.kind === 'project' ? 'כן' : '', t.kind === 'project' ? () => { S.ui.sheet.draft.done = true; saveFromSheet(); } : null);
+  }
+  renderSheet();
+}
+
+async function suggestSteps() {
+  captureDraft();
+  const sh = S.ui.sheet; const d = sh.draft;
+  if (!d.title.trim()) { toast('קודם לכתוב את שם הפרויקט'); return; }
+  if (!configured() || !S.data.aiEnabled) { toast('הצעת צעדים דורשת חיבור לשרת ועוזר AI פעיל'); return; }
+  sh.aiSteps = true; renderSheet();
+  try {
+    const res = await api('aiSteps', { title: d.title, notes: d.notes || '' });
+    if (S.ui.sheet !== sh) return;
+    captureDraft();
+    d.items = (d.items || []).concat((res.steps || []).map((x) => ({ id: itemId(), text: x.text, done: false, par: !!x.par })));
+    sh.flowView = true;
+    toast(res.steps && res.steps.length ? 'נוספו ' + res.steps.length + ' צעדים – אפשר לערוך' : 'לא התקבלו הצעות');
+  } catch (err) {
+    toast(err.message === 'network' ? 'אין חיבור' : 'לא הצלחתי להציע צעדים: ' + err.message);
+  } finally {
+    sh.aiSteps = false;
+    if (S.ui.sheet === sh) renderSheet();
+  }
+}
+
 function newTaskDraft(extra) {
   return Object.assign({
     id: uid(), title: '', category: S.ui.filter !== 'all' ? S.ui.filter : (S.data.categories[0] || DEFAULT_CATS[0]).id,
     date: S.ui.view === 'today' ? todayStr() : '', time: '', priority: 'mid', done: false, doneAt: '',
-    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', attachments: [], _new: true
+    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', attachments: [], kind: 'task', items: [], _new: true
   }, extra || {});
 }
 
@@ -540,6 +644,10 @@ function taskRow(t, mode) {
         ${isRepeating(t) ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(t.repeat))}</span>` : ''}
         ${t.remind && t.remind !== 'none' && !t.done ? `<span class="meta-item">${icon('bell', 13)}${t.remindAt && t.remindAt.d === today ? esc(t.remindAt.t) : ''}${t.remind === 'nag' ? ' נודניק' : ''}</span>` : ''}
         ${t.attachments && t.attachments.length ? `<span class="meta-item">${icon('clip', 13)}${t.attachments.length}</span>` : ''}
+        ${t.kind === 'list' && (t.items || []).length ? `<span class="meta-item">${icon('list', 13)}${itemsProgress(t).done}/${itemsProgress(t).total}</span>` : ''}
+        ${t.kind === 'project' && (t.items || []).length ? (() => { const p = itemsProgress(t); const next = t.items.find((x) => !x.done);
+          return `<span class="meta-item proj">${icon('flow', 13)}${p.done}/${p.total}${next && !t.done ? ' · הבא: ' + esc(next.text) : ''}</span>
+            <span class="mini-bar" aria-hidden="true"><i style="width:${Math.round(p.done / p.total * 100)}%;background:${c.color}"></i></span>`; })() : ''}
         ${t.priority === 'high' && !t.done ? '<span class="badge-high">חשוב</span>' : ''}
       </div>
     </div>
@@ -566,7 +674,7 @@ function viewToday() {
   const today = todayStr();
   const all = S.data.tasks;
   const f = S.ui.filter;
-  const shown = f === 'all' ? all : all.filter((t) => t.category === f);
+  const shown = f === 'all' ? all : f === 'projects' ? all.filter((t) => t.kind === 'project' || t.kind === 'list') : all.filter((t) => t.category === f);
 
   const overdue = shown.filter((t) => !t.done && t.date && t.date < today);
   const todays = shown.filter((t) => t.date === today);
@@ -577,8 +685,9 @@ function viewToday() {
   const doneToday = todayAll.filter((t) => t.done).length;
   const pct = todayAll.length ? Math.round(doneToday / todayAll.length * 100) : 0;
 
-  const openCount = (id) => all.filter((t) => !t.done && (id === 'all' || t.category === id)).length;
-  const chips = [{ id: 'all', name: 'הכול', color: '#9CA3AF' }].concat(S.data.categories).map((c) =>
+  const openCount = (id) => all.filter((t) => !t.done && (id === 'all' || t.category === id || (id === 'projects' && (t.kind === 'project' || t.kind === 'list')))).length;
+  const hasProj = all.some((t) => !t.done && (t.kind === 'project' || t.kind === 'list'));
+  const chips = [{ id: 'all', name: 'הכול', color: '#9CA3AF' }].concat(hasProj ? [{ id: 'projects', name: 'פרויקטים ורשימות', color: '#111827' }] : []).concat(S.data.categories).map((c) =>
     `<button class="chip ${f === c.id ? 'on' : ''}" data-filter="${esc(c.id)}" aria-pressed="${f === c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}<span class="n">${openCount(c.id)}</span></button>`).join('');
 
   const allOverdue = all.filter((t) => !t.done && t.date && t.date < today);
@@ -692,7 +801,8 @@ function describeAction(a) {
   if (a.type === 'create') {
     const c = cat(a.category);
     const when = [dateLabel(a.date), a.time].filter(Boolean).join(', ') || 'בלי תאריך';
-    return `<div class="preview-row"><span class="kind">משימה חדשה</span><b>${esc(a.title)}</b>
+    return `<div class="preview-row"><span class="kind">${a.kind === 'project' ? 'פרויקט חדש' : a.kind === 'list' ? 'רשימה חדשה' : 'משימה חדשה'}</span><b>${esc(a.title)}</b>
+      ${a.addItems && a.addItems.length ? `<div class="meta">${esc(a.addItems.map((x, i) => (a.kind === 'project' ? (i + 1) + '. ' : '• ') + x).join('  '))}</div>` : ''}
       <div class="meta"><span class="cat-chip" style="background:${c.tint};color:${c.ink}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</span>
       <span>${esc(when)}</span>${a.calendar && a.date ? `<span class="meta-item">${icon('cal', 13)}ביומן</span>` : ''}
       ${a.repeat && a.repeat.type ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(a.repeat))}</span>` : ''}
@@ -710,6 +820,7 @@ function describeAction(a) {
   if (a.priority != null) ch.push('עדיפות: ' + ({ low: 'נמוכה', mid: 'רגילה', high: 'גבוהה' }[a.priority]));
   if (a.calendar != null) ch.push(a.calendar ? 'להוסיף ליומן' : 'להוריד מהיומן');
   if (a.repeat) ch.push(a.repeat.type ? repeatLabel(a.repeat) : 'בלי חזרה');
+  if (a.addItems && a.addItems.length) ch.push('+ ' + a.addItems.join(', '));
   if (a.remind != null) ch.push({ none: 'בלי תזכורת', notify: 'תזכורת', nag: 'נודניק' }[a.remind] || '');
   return `<div class="preview-row"><span class="kind">עדכון</span><b>${esc(title)}</b><div class="meta">${esc(ch.join(' · ') || 'ללא שינוי')}</div></div>`;
 }
@@ -814,7 +925,9 @@ function applyActions(msgId) {
       const t = newTaskDraft({
         title: a.title, category: a.category || 'personal', date: a.date || '', time: a.time || '',
         priority: a.priority || 'mid', calendar: !!(a.calendar && a.date), reminder: a.time ? 15 : '', notes: a.notes || '',
-        repeat: a.repeat && a.repeat.type ? a.repeat : '', remind: a.remind && a.time ? a.remind : 'none'
+        repeat: a.repeat && a.repeat.type ? a.repeat : '', remind: a.remind && a.time ? a.remind : 'none',
+        kind: a.kind || (a.addItems && a.addItems.length ? 'list' : 'task'),
+        items: (a.addItems || []).map((x) => ({ id: itemId(), text: x, done: false, par: false }))
       });
       delete t._new;
       if (isRepeating(t) && (!t.date || !occursOn(t.repeat, t.date))) t.date = firstOcc(t.repeat, t.date && t.date > todayStr() ? t.date : todayStr());
@@ -830,6 +943,11 @@ function applyActions(msgId) {
     else {
       ['title', 'category', 'date', 'time', 'priority', 'calendar', 'notes', 'remind'].forEach((k) => { if (a[k] != null) next[k] = a[k]; });
       if (a.repeat) next.repeat = a.repeat.type ? a.repeat : '';
+      if (a.kind) next.kind = a.kind;
+      if (a.addItems && a.addItems.length) {
+        next.items = (next.items || []).concat(a.addItems.map((x) => ({ id: itemId(), text: x, done: false, par: false })));
+        if (!next.kind || next.kind === 'task') next.kind = 'list';
+      }
       if (next.remind !== 'none' && !next.time) next.remind = 'none';
       if (next.calendar && next.time && next.reminder === '') next.reminder = 15;
       updated++;
@@ -911,6 +1029,24 @@ function remindersCard() {
     ${d.notifyChannel ? '<div class="btn-row"><button class="btn" data-action="test-notify">שליחת התראת בדיקה</button></div>' : ''}</div>`;
 }
 
+function healthCard() {
+  const h = S.data.health;
+  if (!configured() || !h) return '';
+  const ago = (iso) => { if (!iso) return 'לא ידוע'; const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    return m < 1 ? 'עכשיו' : m < 60 ? 'לפני ' + m + ' דק׳' : m < 1440 ? 'לפני ' + Math.round(m / 60) + ' שע׳' : 'לפני ' + Math.round(m / 1440) + ' ימים'; };
+  const lateRun = h.lastRun && Date.now() - Date.parse(h.lastRun) > 10 * 60000;
+  const ok = !h.failedToday && !lateRun && (S.data.remindersActive || !S.data.notifyChannel);
+  return `<div class="card settings-status">
+    <div class="suggest-row"><span class="mini-mark" style="color:${ok ? '#059669' : '#B45309'}">${icon('shield', 15)}</span><p><b>${ok ? 'המערכת תקינה' : 'יש משהו לבדוק'}</b></p></div>
+    <div><span>בדיקת תזכורות אחרונה</span><b>${esc(ago(h.lastRun))}${lateRun ? ' ⚠️' : ''}</b></div>
+    <div><span>תזכורות שנשלחו היום</span><b>${h.sentToday}</b></div>
+    <div><span>תקלות היום</span><b>${h.failedToday ? '⚠️ ' + h.failedToday : '0'}</b></div>
+    ${h.lastFailure ? `<p class="hint">תקלה אחרונה (${esc(ago(h.lastFailure.at))}): ${esc(h.lastFailure.msg)}</p>` : ''}
+    <div><span>גיבוי אחרון</span><b>${esc(h.lastBackup ? ago(h.lastBackup) : 'עוד לא')}</b></div>
+    ${h.morningTime ? `<div><span>סיכומים בטלגרם</span><b dir="ltr">${esc(h.morningTime)} · ${esc(h.eveningTime)}</b></div>` : ''}
+  </div>`;
+}
+
 function viewSettings() {
   const last = S.data.lastSync ? new Date(S.data.lastSync) : null;
   const lastText = last ? `${dateLabel(ymd(last))}, ${pad(last.getHours())}:${pad(last.getMinutes())}` : 'עוד לא';
@@ -943,6 +1079,7 @@ function viewSettings() {
       </div>
     </div>
     ${remindersCard()}
+    ${healthCard()}
     <div class="card">
       <p class="hint">כדי להתקין: בתפריט של Chrome (שלוש הנקודות) ← "הוספה למסך הבית" / "התקנת אפליקציה".</p>
       <div class="btn-row"><button class="btn danger" data-action="clear-chat">ניקוי היסטוריית העוזר</button></div>
@@ -979,6 +1116,8 @@ function captureDraft() {
     if (g('f-date')) sh.draft.date = g('f-date').value;
     if (g('f-time')) sh.draft.time = g('f-time').value;
     if (g('f-link')) sh.linkInput = g('f-link').value;
+    if (g('f-item')) sh.itemInput = g('f-item').value;
+    (sh.draft.items || []).forEach((it, i) => { const el = g('item-' + i); if (el) it.text = el.value; });
     if (g('f-reminder')) sh.draft.reminder = g('f-reminder').value === '' ? '' : Number(g('f-reminder').value);
     const r = sh.draft.repeat;
     if (r && r.type === 'monthly' && g('f-dom')) r.dom = Math.min(31, Math.max(1, Number(g('f-dom').value) || 1));
@@ -1026,6 +1165,10 @@ function taskSheet(sh) {
       <button class="icon-btn" data-action="close-sheet" aria-label="סגירה">${icon('close', 18, 2.2)}</button></div>
     <div class="field"><label class="label" for="f-title">מה צריך לעשות?</label>
       <input class="input" id="f-title" type="text" value="${esc(d.title)}" ${d._new ? 'autofocus' : ''} autocomplete="off" enterkeyhint="done"></div>
+    <div class="field"><span class="label">סוג</span><div class="seg">
+      ${[['task', 'משימה'], ['list', 'רשימה'], ['project', 'פרויקט']].map(([v, l]) => `<button type="button" class="${(d.kind || 'task') === v ? 'on' : ''}" data-kind="${v}" aria-pressed="${(d.kind || 'task') === v}">${l}</button>`).join('')}
+    </div></div>
+    ${d.kind === 'list' || d.kind === 'project' ? itemsSection(sh) : ''}
     <div class="field"><span class="label">קטגוריה</span><div class="cat-grid">${cats}</div></div>
     <div class="field"><span class="label">מתי</span>
       <div class="quick">${quick}</div>
@@ -1115,6 +1258,10 @@ function saveFromSheet() {
   delete d._new;
   delete d.calendarTouched;
   if (S.ui.sheet.uploading) { toast('רגע, התמונה עוד עולה…'); return; }
+  const pendingItem = (S.ui.sheet.itemInput || '').trim();
+  if (pendingItem && (d.kind === 'list' || d.kind === 'project')) (d.items = d.items || []).push({ id: itemId(), text: pendingItem, done: false, par: false });
+  d.items = (d.items || []).filter((it) => String(it.text || '').trim());
+  if (d.kind === 'task' || !d.kind) d.items = [];
   const pending = (S.ui.sheet.linkInput || '').trim();
   if (pending) { const a = linkAttachment(pending); if (a) (d.attachments = d.attachments || []).push(a); }
   const before = findTask(d.id);
@@ -1196,6 +1343,18 @@ document.addEventListener('click', (e) => {
     else { const n = Number(v); r.days = r.days.includes(n) ? (r.days.length > 1 ? r.days.filter((x) => x !== n) : r.days) : r.days.concat(n).sort(); }
     renderSheet(); return;
   }
+  if ((t = el('[data-kind]'))) {
+    captureDraft(); const d = S.ui.sheet.draft; d.kind = t.dataset.kind;
+    if (d.kind === 'list' && !d.title.trim()) d.title = 'רשימת קניות';
+    renderSheet(); return;
+  }
+  if ((t = el('[data-item-toggle]'))) { toggleItem(Number(t.dataset.itemToggle)); return; }
+  if ((t = el('[data-item-remove]'))) { captureDraft(); S.ui.sheet.draft.items.splice(Number(t.dataset.itemRemove), 1); renderSheet(); return; }
+  if ((t = el('[data-item-par]'))) { captureDraft(); const it = S.ui.sheet.draft.items[Number(t.dataset.itemPar)]; it.par = !it.par; renderSheet(); return; }
+  if ((t = el('[data-item-up]'))) {
+    captureDraft(); const a = S.ui.sheet.draft.items; const i = Number(t.dataset.itemUp);
+    [a[i - 1], a[i]] = [a[i], a[i - 1]]; if (i - 1 === 0) a[0].par = false; renderSheet(); return;
+  }
   if ((t = el('[data-att-remove]'))) {
     captureDraft(); S.ui.sheet.draft.attachments.splice(Number(t.dataset.attRemove), 1); renderSheet(); return;
   }
@@ -1223,6 +1382,18 @@ document.addEventListener('click', (e) => {
       case 'toggle-cal': captureDraft(); S.ui.sheet.draft.calendar = !S.ui.sheet.draft.calendar; S.ui.sheet.draft.calendarTouched = true;
         if (S.ui.sheet.draft.calendar && S.ui.sheet.draft.reminder === '') S.ui.sheet.draft.reminder = 15;
         renderSheet(); return;
+      case 'add-item': {
+        captureDraft(); const sh = S.ui.sheet; const v = (sh.itemInput || '').trim();
+        if (!v) return;
+        (sh.draft.items = sh.draft.items || []).push({ id: itemId(), text: v, done: false, par: false });
+        sh.itemInput = ''; if (sh.draft.kind === 'project') sh.flowView = false;
+        renderSheet(); const i = document.getElementById('f-item'); if (i) i.focus(); return;
+      }
+      case 'clear-checked': captureDraft(); S.ui.sheet.draft.items = S.ui.sheet.draft.items.filter((x) => !x.done); renderSheet(); return;
+      case 'uncheck-all': captureDraft(); S.ui.sheet.draft.items.forEach((x) => { x.done = false; }); renderSheet(); return;
+      case 'ai-steps': suggestSteps(); return;
+      case 'flow-view': captureDraft(); S.ui.sheet.flowView = true; renderSheet(); return;
+      case 'list-view': captureDraft(); S.ui.sheet.flowView = false; renderSheet(); return;
       case 'add-link': {
         captureDraft(); const sh = S.ui.sheet; const a = linkAttachment(sh.linkInput);
         if (!a) { toast('הקישור לא נראה תקין'); return; }
@@ -1304,6 +1475,7 @@ document.addEventListener('submit', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'f-title') { e.preventDefault(); saveFromSheet(); }
+  if (e.key === 'Enter' && e.target.id === 'f-item') { e.preventDefault(); const b = document.querySelector('[data-action="add-item"]'); if (b) b.click(); }
   if (e.key === 'Enter' && e.target.id === 'f-link') { e.preventDefault(); const b = document.querySelector('[data-action="add-link"]'); if (b) b.click(); }
   if (e.key === 'Escape' && S.ui.lightbox) { S.ui.lightbox = null; renderLightbox(); return; }
   if (e.key === 'Escape' && S.ui.sheet) closeSheet();

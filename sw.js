@@ -1,5 +1,5 @@
 /* Service worker: שומר את קבצי האפליקציה כדי שתיפתח גם בלי רשת */
-const VERSION = 'tasks-v7';
+const VERSION = 'tasks-v8';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png'];
 
