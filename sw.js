@@ -1,5 +1,5 @@
 /* Service worker: שומר את קבצי האפליקציה כדי שתיפתח גם בלי רשת */
-const VERSION = 'tasks-v5';
+const VERSION = 'tasks-v7';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png'];
 
@@ -14,6 +14,21 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
+  // שיתוף מאפליקציה אחרת (Share target): שומרים את מה ששותף ופותחים את האפליקציה
+  if (e.request.method === 'POST' && url.origin === self.location.origin && url.pathname.endsWith('/share')) {
+    e.respondWith((async () => {
+      const form = await e.request.formData();
+      const files = form.getAll('files').filter((f) => f && f.size);
+      const cache = await caches.open('tm-share');
+      await Promise.all(files.map((f, i) => cache.put('share-file-' + i, new Response(f, { headers: { 'content-type': f.type } }))));
+      await cache.put('share-meta', new Response(JSON.stringify({
+        title: form.get('title') || '', text: form.get('text') || '', url: form.get('url') || '',
+        files: files.length, names: files.map((f) => f.name)
+      })));
+      return Response.redirect(new URL('./?shared=1#today', self.registration.scope).href, 303);
+    })());
+    return;
+  }
   if (e.request.method !== 'GET') return;
   // קבצי האפליקציה: קודם רשת (כדי לקבל עדכונים), ואם אין – מהמטמון
   if (url.origin === self.location.origin) {

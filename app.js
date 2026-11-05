@@ -43,7 +43,11 @@ const ICONS = {
   tag: '<path d="M20 12l-8 8-9-9V3h8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
   repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
-  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/>',
+  clip: '<path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
+  external: '<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>'
 };
 
 function icon(name, size = 20, stroke = 2, color = 'currentColor') {
@@ -263,6 +267,9 @@ async function sync(manual) {
       S.data.ntfyTopic = res.ntfyTopic || '';
       S.data.ntfyServer = res.ntfyServer || 'https://ntfy.sh';
       S.data.remindersActive = !!res.remindersActive;
+      S.data.notifyChannel = res.notifyChannel || '';
+      S.data.telegramBot = res.telegramBot || '';
+      S.data.telegramConnected = !!res.telegramConnected;
       S.data.lastSync = new Date().toISOString();
       S.ui.syncError = '';
       persistData();
@@ -358,11 +365,108 @@ function doneRow(t) {
   </div>`;
 }
 
+/* ---------------- קישורים ותמונות ---------------- */
+
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; } };
+const imgUrls = {};
+
+async function imageCache() { return 'caches' in window ? caches.open('tm-images') : null; }
+
+async function getImageUrl(id) {
+  if (imgUrls[id]) return imgUrls[id];
+  const cache = await imageCache().catch(() => null);
+  let blob = null;
+  if (cache) { const hit = await cache.match('img/' + id); if (hit) blob = await hit.blob(); }
+  if (!blob) {
+    const res = await api('getImage', { id });
+    const bin = atob(res.data); const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    blob = new Blob([arr], { type: res.mime || 'image/jpeg' });
+    if (cache) cache.put('img/' + id, new Response(blob)).catch(() => {});
+  }
+  imgUrls[id] = URL.createObjectURL(blob);
+  return imgUrls[id];
+}
+
+function hydrateImages() {
+  document.querySelectorAll('img[data-img]:not([data-loaded])').forEach((img) => {
+    img.setAttribute('data-loaded', '1');
+    getImageUrl(img.dataset.img).then((u) => { img.src = u; })
+      .catch(() => { img.closest('.att-img, .lightbox') && img.closest('.att-img, .lightbox').classList.add('broken'); });
+  });
+}
+
+/** מקטין תמונה בטלפון לפני העלאה (עד 1600px, JPEG). */
+async function resizeImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+    const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
+    const dataUrl = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(blob); });
+    return { blob, dataUrl };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+async function uploadFiles(files) {
+  const sh = S.ui.sheet;
+  if (!sh || sh.type !== 'task' || !files || !files.length) return;
+  if (!configured()) { toast('כדי לשמור תמונות צריך חיבור לשרת'); return; }
+  if (!navigator.onLine) { toast('אין רשת – אפשר להוסיף תמונות כשתחזור'); return; }
+  const d = sh.draft;
+  d.attachments = d.attachments || [];
+  sh.uploaded = sh.uploaded || [];
+  for (const f of Array.from(files)) {
+    if (!/^image\//.test(f.type)) { toast('אפשר לצרף רק תמונות'); continue; }
+    captureDraft(); sh.uploading = (sh.uploading || 0) + 1; renderSheet();
+    try {
+      const { blob, dataUrl } = await resizeImage(f);
+      const res = await api('uploadImage', { dataUrl, name: f.name || 'image' });
+      const cache = await imageCache().catch(() => null);
+      if (cache) await cache.put('img/' + res.id, new Response(blob)).catch(() => {});
+      sh.uploaded.push(res.id);
+      if (S.ui.sheet === sh) { captureDraft(); d.attachments.push({ type: 'image', id: res.id, name: res.name }); }
+      else api('deleteImage', { id: res.id }).catch(() => {});
+    } catch (err) {
+      toast(err.message === 'network' ? 'ההעלאה נכשלה – אין חיבור' : 'ההעלאה נכשלה: ' + err.message);
+    } finally {
+      sh.uploading--;
+      if (S.ui.sheet === sh) { captureDraft(); renderSheet(); }
+    }
+  }
+}
+
+function attachmentsSection(sh) {
+  const d = sh.draft;
+  const list = d.attachments || [];
+  const links = list.map((a, i) => a.type !== 'link' ? '' : `<div class="att-link">
+      <span class="att-ico">${icon('link', 16)}</span>
+      <a href="${esc(a.url)}" target="_blank" rel="noopener" dir="ltr">${esc(a.title || hostOf(a.url))}</a>
+      <button type="button" class="att-x" data-att-remove="${i}" aria-label="הסרת הקישור">${icon('close', 14, 2.2)}</button></div>`).join('');
+  const imgs = list.map((a, i) => a.type !== 'image' ? '' : `<div class="att-img">
+      <button type="button" class="att-view" data-att-view="${esc(a.id)}" aria-label="הצגת התמונה"><img data-img="${esc(a.id)}" alt=""></button>
+      <button type="button" class="att-x" data-att-remove="${i}" aria-label="הסרת התמונה">${icon('close', 14, 2.2)}</button></div>`).join('');
+  const loading = Array.from({ length: sh.uploading || 0 }).map(() => '<div class="att-img loading"><span>מעלה…</span></div>').join('');
+  return `<div class="field"><span class="label">${icon('clip', 14)} קישורים ותמונות</span>
+    ${links ? `<div class="att-links">${links}</div>` : ''}
+    ${imgs || loading ? `<div class="att-grid">${imgs}${loading}</div>` : ''}
+    <div class="att-add">
+      <input class="input" id="f-link" type="url" inputmode="url" dir="ltr" placeholder="https://…" value="${esc(sh.linkInput || '')}" aria-label="קישור">
+      <button type="button" class="btn outline" data-action="add-link">${icon('link', 16)}הוספה</button>
+    </div>
+    <label class="btn outline att-photo" for="f-image">${icon('image', 16)}הוספת תמונה</label>
+    <input id="f-image" type="file" accept="image/*" multiple class="sr-only">
+  </div>`;
+}
+
 function newTaskDraft(extra) {
   return Object.assign({
     id: uid(), title: '', category: S.ui.filter !== 'all' ? S.ui.filter : (S.data.categories[0] || DEFAULT_CATS[0]).id,
     date: S.ui.view === 'today' ? todayStr() : '', time: '', priority: 'mid', done: false, doneAt: '',
-    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', _new: true
+    calendar: false, reminder: 15, eventId: '', notes: '', repeat: '', remind: 'none', remindAt: '', attachments: [], _new: true
   }, extra || {});
 }
 
@@ -435,6 +539,7 @@ function taskRow(t, mode) {
         ${t.calendar && t.date ? `<span class="meta-item">${icon('cal', 13)}ביומן</span>` : ''}
         ${isRepeating(t) ? `<span class="meta-item">${icon('repeat', 13)}${esc(repeatLabel(t.repeat))}</span>` : ''}
         ${t.remind && t.remind !== 'none' && !t.done ? `<span class="meta-item">${icon('bell', 13)}${t.remindAt && t.remindAt.d === today ? esc(t.remindAt.t) : ''}${t.remind === 'nag' ? ' נודניק' : ''}</span>` : ''}
+        ${t.attachments && t.attachments.length ? `<span class="meta-item">${icon('clip', 13)}${t.attachments.length}</span>` : ''}
         ${t.priority === 'high' && !t.done ? '<span class="badge-high">חשוב</span>' : ''}
       </div>
     </div>
@@ -788,6 +893,24 @@ function toggleVoice() {
 
 /* ---------------- הגדרות ---------------- */
 
+function remindersCard() {
+  const d = S.data;
+  let body = '';
+  if (d.notifyChannel === 'telegram') {
+    const bot = d.telegramBot ? '@' + d.telegramBot : 'הבוט';
+    body = d.telegramConnected
+      ? `<p><b>תזכורות בטלגרם</b><br>${d.remindersActive ? 'פעילות' : 'הבדיקה כל דקה לא פעילה – הרץ שוב את setupReminders'} · מחובר ל-<bdi dir="ltr">${esc(bot)}</bdi></p>`
+      : `<p><b>תזכורות בטלגרם</b><br>כמעט מוכן: פתח את <bdi dir="ltr">${esc(bot)}</bdi> בטלגרם ולחץ Start. תוך דקה הבוט יענה "מחובר".</p>`;
+    if (d.telegramBot && !d.telegramConnected) body += `<div class="btn-row"><a class="btn" href="https://t.me/${esc(d.telegramBot)}" target="_blank" rel="noopener">פתיחת הבוט בטלגרם</a></div>`;
+  } else if (d.notifyChannel === 'ntfy') {
+    body = `<p><b>תזכורות ב-ntfy</b><br>ערוץ: <code dir="ltr">${esc(d.ntfyTopic)}</code></p>`;
+  } else {
+    body = '<p><b>תזכורות בטלפון</b><br>עוד לא הופעלו. ההוראות ב-README, בפרק על טלגרם.</p>';
+  }
+  return `<div class="card"><div class="suggest-row"><span class="mini-mark">${icon('bell', 15)}</span><div>${body}</div></div>
+    ${d.notifyChannel ? '<div class="btn-row"><button class="btn" data-action="test-notify">שליחת התראת בדיקה</button></div>' : ''}</div>`;
+}
+
 function viewSettings() {
   const last = S.data.lastSync ? new Date(S.data.lastSync) : null;
   const lastText = last ? `${dateLabel(ymd(last))}, ${pad(last.getHours())}:${pad(last.getMinutes())}` : 'עוד לא';
@@ -819,12 +942,7 @@ function viewSettings() {
         <button class="btn" data-action="sync">${icon('sync', 16)}סנכרון עכשיו</button>
       </div>
     </div>
-    <div class="card">
-      <div class="suggest-row"><span class="mini-mark">${icon('bell', 15)}</span>
-        <p><b>תזכורות ב-ntfy</b><br>${S.data.remindersActive ? 'פעילות. ' : 'עוד לא הופעלו – צריך להריץ פעם אחת את setupReminders בשרת. '}${S.data.ntfyTopic ? 'הערוץ שצריך להירשם אליו באפליקציית ntfy:' : ''}</p></div>
-      ${S.data.ntfyTopic ? `<div class="topic-row"><code dir="ltr">${esc(S.data.ntfyTopic)}</code><button class="icon-btn" data-action="copy-topic" aria-label="העתקת שם הערוץ">${icon('copy', 18)}</button></div>` : ''}
-      ${S.data.ntfyTopic ? '<div class="btn-row"><button class="btn" data-action="test-notify">שליחת התראת בדיקה</button></div>' : ''}
-    </div>
+    ${remindersCard()}
     <div class="card">
       <p class="hint">כדי להתקין: בתפריט של Chrome (שלוש הנקודות) ← "הוספה למסך הבית" / "התקנת אפליקציה".</p>
       <div class="btn-row"><button class="btn danger" data-action="clear-chat">ניקוי היסטוריית העוזר</button></div>
@@ -842,6 +960,10 @@ function openSheet(sheet) {
 }
 function closeSheet() {
   if (!S.ui.sheet) return;
+  const sh = S.ui.sheet;
+  if (!sh.saved && sh.uploaded && sh.uploaded.length) {
+    sh.uploaded.forEach((id) => api('deleteImage', { id }).catch(() => {}));
+  }
   S.ui.sheet = null;
   renderSheet();
   if (history.state && history.state.sheet) history.back();
@@ -856,6 +978,7 @@ function captureDraft() {
     if (g('f-notes')) sh.draft.notes = g('f-notes').value;
     if (g('f-date')) sh.draft.date = g('f-date').value;
     if (g('f-time')) sh.draft.time = g('f-time').value;
+    if (g('f-link')) sh.linkInput = g('f-link').value;
     if (g('f-reminder')) sh.draft.reminder = g('f-reminder').value === '' ? '' : Number(g('f-reminder').value);
     const r = sh.draft.repeat;
     if (r && r.type === 'monthly' && g('f-dom')) r.dom = Math.min(31, Math.max(1, Number(g('f-dom').value) || 1));
@@ -870,8 +993,19 @@ function renderSheet() {
   const sh = S.ui.sheet;
   if (!sh) { slot.innerHTML = ''; document.body.style.overflow = ''; return; }
   document.body.style.overflow = 'hidden';
+  const keepScroll = slot.querySelector('.sheet') ? slot.querySelector('.sheet').scrollTop : 0;
   slot.innerHTML = `<div class="backdrop" data-action="close-sheet"></div>
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${sh.type === 'task' ? taskSheet(sh) : categorySheet(sh)}</div>`;
+  if (keepScroll) slot.querySelector('.sheet').scrollTop = keepScroll;
+  hydrateImages();
+}
+
+function renderLightbox() {
+  const slot = document.getElementById('lightbox-slot');
+  slot.innerHTML = S.ui.lightbox ? `<div class="lightbox" data-action="close-lightbox">
+      <img data-img="${esc(S.ui.lightbox)}" alt="">
+      <button class="icon-btn" data-action="close-lightbox" aria-label="סגירה">${icon('close', 18, 2.2)}</button></div>` : '';
+  hydrateImages();
 }
 
 function taskSheet(sh) {
@@ -910,6 +1044,7 @@ function taskSheet(sh) {
       </div>
       ${d.calendar && d.date && d.time ? `<div class="sub-row"><label for="f-reminder">התראה ביומן</label><select id="f-reminder">${reminders}</select></div>` : ''}
     </div>
+    ${attachmentsSection(sh)}
     <div class="field"><label class="label" for="f-notes">הערות</label>
       <textarea class="input" id="f-notes" rows="2">${esc(d.notes || '')}</textarea></div>
     <button class="btn primary block" data-action="save-task">${d._new ? 'שמירת משימה' : 'שמירת שינויים'}</button>
@@ -942,7 +1077,7 @@ function remindSection(d) {
   if (on && !d.time) extra = '<p class="hint warn">התזכורת יוצאת בשעת המשימה – צריך לבחור שעה למעלה.</p>';
   else if (on) {
     const override = d.remindAt && d.remindAt.d === today ? d.remindAt.t : '';
-    extra = `<p class="hint">${d.remind === 'nag' ? 'התראה ב-ntfy בשעת המשימה, וחוזרת כל 5 דקות עד שמסמנים "בוצע" או "הפסק להיום" (עד שעתיים).' : 'התראה אחת ב-ntfy בשעת המשימה.'}</p>
+    extra = `<p class="hint">${d.remind === 'nag' ? 'התראה בשעת המשימה, וחוזרת כל 5 דקות עד שמסמנים "בוצע" או "הפסק להיום" (עד שעתיים).' : 'התראה אחת בשעת המשימה.'}</p>
       ${d.date === today || override ? `<div class="sub-row box"><label for="f-today-time">רק היום, בשעה אחרת</label>
         <span class="today-time"><input id="f-today-time" type="time" value="${esc(override)}">${override ? '<button type="button" class="btn ghost" data-action="clear-today">ביטול</button>' : ''}</span></div>` : ''}`;
   }
@@ -979,10 +1114,26 @@ function saveFromSheet() {
   const isNew = d._new;
   delete d._new;
   delete d.calendarTouched;
+  if (S.ui.sheet.uploading) { toast('רגע, התמונה עוד עולה…'); return; }
+  const pending = (S.ui.sheet.linkInput || '').trim();
+  if (pending) { const a = linkAttachment(pending); if (a) (d.attachments = d.attachments || []).push(a); }
+  const before = findTask(d.id);
+  const keep = new Set((d.attachments || []).filter((a) => a.type === 'image').map((a) => a.id));
+  const had = ((before && before.attachments) || []).filter((a) => a.type === 'image').map((a) => a.id).concat(S.ui.sheet.uploaded || []);
+  had.filter((id) => !keep.has(id)).forEach((id) => api('deleteImage', { id }).catch(() => {}));
+  S.ui.sheet.saved = true;
   saveTask(d);
   closeSheet();
   render();
   toast(isNew ? 'המשימה נוספה' : 'נשמר');
+}
+
+function linkAttachment(raw) {
+  let u = String(raw || '').trim();
+  if (!u) return null;
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  try { const p = new URL(u); if (!p.hostname.includes('.')) return null; } catch (e) { return null; }
+  return { type: 'link', url: u, title: '' };
 }
 
 async function saveCategory() {
@@ -1045,6 +1196,10 @@ document.addEventListener('click', (e) => {
     else { const n = Number(v); r.days = r.days.includes(n) ? (r.days.length > 1 ? r.days.filter((x) => x !== n) : r.days) : r.days.concat(n).sort(); }
     renderSheet(); return;
   }
+  if ((t = el('[data-att-remove]'))) {
+    captureDraft(); S.ui.sheet.draft.attachments.splice(Number(t.dataset.attRemove), 1); renderSheet(); return;
+  }
+  if ((t = el('[data-att-view]'))) { S.ui.lightbox = t.dataset.attView; renderLightbox(); return; }
   if ((t = el('[data-remind]'))) { captureDraft(); S.ui.sheet.draft.remind = t.dataset.remind; renderSheet(); return; }
   if ((t = el('[data-quick-date]'))) {
     captureDraft(); const d = S.ui.sheet.draft; d.date = t.dataset.quickDate;
@@ -1068,11 +1223,18 @@ document.addEventListener('click', (e) => {
       case 'toggle-cal': captureDraft(); S.ui.sheet.draft.calendar = !S.ui.sheet.draft.calendar; S.ui.sheet.draft.calendarTouched = true;
         if (S.ui.sheet.draft.calendar && S.ui.sheet.draft.reminder === '') S.ui.sheet.draft.reminder = 15;
         renderSheet(); return;
+      case 'add-link': {
+        captureDraft(); const sh = S.ui.sheet; const a = linkAttachment(sh.linkInput);
+        if (!a) { toast('הקישור לא נראה תקין'); return; }
+        (sh.draft.attachments = sh.draft.attachments || []).push(a); sh.linkInput = ''; renderSheet(); return;
+      }
+      case 'close-lightbox': S.ui.lightbox = null; renderLightbox(); return;
       case 'toggle-done': S.ui.showDone = !S.ui.showDone; render(); return;
       case 'clear-today': captureDraft(); S.ui.sheet.draft.remindAt = ''; renderSheet(); return;
       case 'test-notify':
-        api('testNotify').then(() => toast('נשלחה התראת בדיקה ל-ntfy'))
-          .catch((err) => toast(err.message === 'reminders_not_set_up' ? 'צריך קודם להריץ setupReminders בשרת' : 'שגיאה: ' + err.message));
+        api('testNotify').then(() => toast('נשלחה התראת בדיקה'))
+          .catch((err) => toast(err.message === 'reminders_not_set_up' ? 'צריך קודם להריץ setupReminders בשרת'
+            : err.message === 'telegram_not_connected' ? 'צריך קודם ללחוץ Start בבוט בטלגרם' : 'שגיאה: ' + err.message));
         return;
       case 'copy-topic':
         (navigator.clipboard ? navigator.clipboard.writeText(S.data.ntfyTopic) : Promise.reject())
@@ -1109,6 +1271,7 @@ function focusAI() { const i = document.getElementById('ai-input'); if (i) i.foc
 
 document.addEventListener('change', (e) => {
   if (!S.ui.sheet || S.ui.sheet.type !== 'task') return;
+  if (e.target.id === 'f-image') { const files = Array.from(e.target.files || []); e.target.value = ''; uploadFiles(files); return; }
   if (e.target.id === 'f-today-time') {
     captureDraft();
     S.ui.sheet.draft.remindAt = e.target.value ? { d: todayStr(), t: e.target.value } : '';
@@ -1141,6 +1304,8 @@ document.addEventListener('submit', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'f-title') { e.preventDefault(); saveFromSheet(); }
+  if (e.key === 'Enter' && e.target.id === 'f-link') { e.preventDefault(); const b = document.querySelector('[data-action="add-link"]'); if (b) b.click(); }
+  if (e.key === 'Escape' && S.ui.lightbox) { S.ui.lightbox = null; renderLightbox(); return; }
   if (e.key === 'Escape' && S.ui.sheet) closeSheet();
 });
 
@@ -1154,9 +1319,34 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 /* הפעלה                                                               */
 /* ================================================================== */
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+/** שיתוף מאפליקציות אחרות ("שתף" ← המשימות שלי): פותח משימה חדשה עם הקישור/התמונות. */
+async function handleShare() {
+  if (!/[?&]shared=1/.test(location.search) || !('caches' in window)) return;
+  history.replaceState(null, '', location.pathname + '#today');
+  const cache = await caches.open('tm-share');
+  const metaRes = await cache.match('share-meta');
+  if (!metaRes) return;
+  const meta = await metaRes.json();
+  const files = [];
+  for (let i = 0; i < (meta.files || 0); i++) {
+    const r = await cache.match('share-file-' + i);
+    if (r) { const b = await r.blob(); files.push(new File([b], meta.names[i] || 'image.jpg', { type: b.type || 'image/jpeg' })); }
+  }
+  await caches.delete('tm-share');
+  const text = [meta.title, meta.text].filter(Boolean).join(' ');
+  const urlMatch = meta.url || (text.match(/https?:\/\/\S+/) || [])[0] || '';
+  let title = (meta.title || (meta.text || '').replace(/https?:\/\/\S+/g, '').trim()).split('\n')[0].slice(0, 120);
+  const draft = newTaskDraft({ title, date: '' });
+  if (urlMatch) draft.attachments.push({ type: 'link', url: urlMatch, title: meta.title || '' });
+  if (!title) draft.title = urlMatch ? 'לבדוק: ' + hostOf(urlMatch) : '';
+  openSheet({ type: 'task', draft, focus: true });
+  if (files.length) uploadFiles(files);
+}
+
 route();
+handleShare().catch(() => {});
 sync();
 setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 5 * 60 * 1000);
