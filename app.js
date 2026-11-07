@@ -468,7 +468,7 @@ async function uploadFiles(files) {
       toast(err.message === 'network' ? 'ההעלאה נכשלה – אין חיבור' : 'ההעלאה נכשלה: ' + err.message);
     } finally {
       sh.uploading--;
-      if (S.ui.sheet === sh) { captureDraft(); renderSheet(); }
+      if (S.ui.sheet === sh) refreshSheet(true);
     }
   }
 }
@@ -590,7 +590,7 @@ async function suggestSteps() {
     toast(err.message === 'network' ? 'אין חיבור' : 'לא הצלחתי להציע צעדים: ' + err.message);
   } finally {
     sh.aiSteps = false;
-    if (S.ui.sheet === sh) renderSheet();
+    if (S.ui.sheet === sh) refreshSheet(true);
   }
 }
 
@@ -640,7 +640,7 @@ function sendComment() {
   save('tm.comments', S.comments);
   sh.commentInput = '';
   enqueue({ action: 'addComment', taskId: id, text, id: c.id });
-  flush().then(() => { c.pending = false; save('tm.comments', S.comments); if (S.ui.sheet === sh) renderSheet(); });
+  flush().then(() => { c.pending = false; save('tm.comments', S.comments); if (S.ui.sheet === sh) refreshSheet(true); });
   renderSheet();
   const el = document.getElementById('f-comment'); if (el) el.focus();
 }
@@ -759,7 +759,29 @@ function render() {
   document.getElementById('fab-slot').innerHTML = ['today', 'calendar', 'categories'].includes(v)
     ? `<button class="fab" data-action="new-task" aria-label="משימה חדשה">${icon('plus', 26, 2.2)}</button>` : '';
   document.getElementById('composer-slot').innerHTML = v === 'ai' ? composerHtml() : '';
+  refreshSheet();
+}
+
+/**
+ * רענון "מבחוץ" (סנכרון, חזרה לאפליקציה, טעינת הודעות) – לא מוחק את מה שהמשתמש מקליד.
+ * אם המשתמש באמצע הקלדה בטופס, לא נוגעים בו בכלל; אחרת שומרים את הטיוטה ומציירים מחדש.
+ */
+function refreshSheet(force) {
+  const sh = S.ui.sheet;
+  if (!sh) { renderSheet(); return; }
+  const slot = document.getElementById('sheet-slot');
+  const a = document.activeElement;
+  const typing = a && slot.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  if (typing && !force) return;
+  captureDraft();
+  const focusId = typing ? a.id : '';
+  let sel = null;
+  try { if (typing) sel = [a.selectionStart, a.selectionEnd]; } catch (e) { /* type=date וכו' */ }
   renderSheet();
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) { el.focus({ preventScroll: true }); try { if (sel && sel[0] != null) el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* */ } }
+  }
 }
 
 function renderNav() {
