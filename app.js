@@ -52,6 +52,7 @@ const ICONS = {
   flow: '<rect x="3" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/><path d="M6.5 8v4.5a2 2 0 0 0 2 2h7v1.5"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   par: '<path d="M8 4v16M16 4v16"/>',
+  grip: '<path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke-width="3.2"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>',
@@ -533,28 +534,52 @@ function itemsSection(sh) {
   const items = d.items || [];
   const isProj = d.kind === 'project';
   const p = itemsProgress(d);
-  const rows = items.map((it, i) => `<div class="item-row ${it.done ? 'done' : ''} ${isProj && it.par ? 'par' : ''}">
+  const rows = items.map((it, i) => `<div class="item-row ${it.done ? 'done' : ''} ${isProj && it.par ? 'par' : ''}" data-row="${i}">
+      ${items.length > 1 ? `<span class="item-grip" data-grip="${i}" aria-label="גרירה לשינוי הסדר" role="button">${icon('grip', 18)}</span>` : ''}
       <button type="button" class="item-check" data-item-toggle="${i}" aria-label="${it.done ? 'בטל סימון' : 'סמן'}">${it.done ? icon('check', 13, 3, '#fff') : ''}</button>
       ${isProj ? `<span class="item-num">${i + 1}</span>` : ''}
       <input class="item-text" id="item-${i}" value="${esc(it.text)}" aria-label="${isProj ? 'צעד' : 'פריט'} ${i + 1}">
       ${isProj && i > 0 ? `<button type="button" class="item-btn ${it.par ? 'on' : ''}" data-item-par="${i}" aria-pressed="${!!it.par}" title="במקביל לצעד הקודם" aria-label="במקביל לצעד הקודם">${icon('par', 15)}</button>` : ''}
-      ${isProj && i > 0 ? `<button type="button" class="item-btn" data-item-up="${i}" aria-label="להזיז למעלה">${icon('up', 15)}</button>` : ''}
       <button type="button" class="item-btn" data-item-remove="${i}" aria-label="הסרה">${icon('close', 14, 2.2)}</button>
     </div>`).join('');
-  return `<div class="field">
-    <span class="label">${icon(isProj ? 'flow' : 'list', 14)} ${isProj ? 'צעדים' : 'פריטים'}${p.total ? ` · ${p.done}/${p.total}` : ''}</span>
+  return `<div class="field" id="items-field">
+    <span class="label">${icon(isProj ? 'flow' : 'list', 14)} ${isProj ? 'צעדים' : 'פריטים'}<span id="items-count">${p.total ? ` · ${p.done}/${p.total}` : ''}</span></span>
     ${isProj && items.length ? `<div class="seg seg2"><button type="button" class="${sh.flowView !== false ? 'on' : ''}" data-action="flow-view">תרשים</button><button type="button" class="${sh.flowView === false ? 'on' : ''}" data-action="list-view">עריכה</button></div>` : ''}
     ${isProj && items.length && sh.flowView !== false ? flowchart(items) : `<div class="items">${rows}</div>`}
     <div class="att-add">
       <input class="input" id="f-item" type="text" placeholder="${isProj ? 'צעד חדש…' : 'פריט חדש… (Enter להוספה)'}" value="${esc(sh.itemInput || '')}" enterkeyhint="enter" aria-label="${isProj ? 'צעד חדש' : 'פריט חדש'}">
       <button type="button" class="btn outline" data-action="add-item">${icon('plus', 16, 2.2)}הוספה</button>
     </div>
-    <div class="btn-row" style="justify-content:flex-start">
+    <div class="btn-row" id="items-actions" style="justify-content:flex-start">${itemsActions(sh)}</div>
+  </div>`;
+}
+
+function itemsActions(sh) {
+  const isProj = sh.draft.kind === 'project';
+  const p = itemsProgress(sh.draft);
+  return `
       ${isProj ? `<button type="button" class="btn" data-action="ai-steps" ${sh.aiSteps ? 'disabled' : ''}>${icon('spark', 16)}${sh.aiSteps ? 'חושב…' : 'הצע צעדים'}</button>` : ''}
       ${!isProj && p.done ? '<button type="button" class="btn ghost" data-action="clear-checked">ניקוי מסומנים</button>' : ''}
-      ${!isProj && p.total ? '<button type="button" class="btn ghost" data-action="uncheck-all">ביטול כל הסימונים</button>' : ''}
-    </div>
-  </div>`;
+      ${!isProj && p.total ? '<button type="button" class="btn ghost" data-action="uncheck-all">ביטול כל הסימונים</button>' : ''}`;
+}
+
+/** עדכון חלק של אזור הפריטים – בלי לצייר מחדש את כל הטופס (בלי "קפיצה"). */
+function refreshItems() {
+  const sh = S.ui.sheet;
+  const field = document.getElementById('items-field');
+  if (!sh || !field) { renderSheet(); return; }
+  const tmp = document.createElement('div');
+  tmp.innerHTML = itemsSection(sh);
+  field.replaceWith(tmp.firstElementChild);
+}
+
+/** שמירה מיידית של שינוי בפריטים במשימה קיימת (נוח בסופר). */
+function saveItemsNow() {
+  const sh = S.ui.sheet;
+  if (!sh || sh.draft._new) return null;
+  const t = clone(sh.draft); delete t._new; delete t.calendarTouched;
+  saveTask(t);
+  return t;
 }
 
 /** סימון פריט/צעד: במשימה קיימת – נשמר מיד (נוח בסופר). */
@@ -563,14 +588,94 @@ function toggleItem(i) {
   const sh = S.ui.sheet; const it = sh.draft.items[i];
   if (!it) return;
   it.done = !it.done;
-  if (!sh.draft._new) {
-    const t = clone(sh.draft); delete t._new; delete t.calendarTouched;
-    saveTask(t);
+  const t = saveItemsNow();
+  if (t) {
     const p = itemsProgress(t);
     if (p.total && p.done === p.total) toast(t.kind === 'project' ? 'כל הצעדים הושלמו! לסמן את הפרויקט כבוצע?' : 'הכול סומן ✓',
       t.kind === 'project' ? 'כן' : '', t.kind === 'project' ? () => { S.ui.sheet.draft.done = true; saveFromSheet(); } : null);
   }
-  renderSheet();
+  // עדכון במקום: רק השורה, המונה והכפתורים – בלי לצייר את כל הטופס מחדש
+  const btn = document.querySelector(`#items-field .item-row [data-item-toggle="${i}"]`);
+  if (!btn) { refreshItems(); return; }
+  const row = btn.closest('.item-row');
+  row.classList.toggle('done', it.done);
+  btn.innerHTML = it.done ? icon('check', 13, 3, '#fff') : '';
+  btn.setAttribute('aria-label', it.done ? 'בטל סימון' : 'סמן');
+  btn.classList.remove('pop'); void btn.offsetWidth; if (it.done) btn.classList.add('pop');
+  const p2 = itemsProgress(sh.draft);
+  const cnt = document.getElementById('items-count'); if (cnt) cnt.textContent = p2.total ? ` · ${p2.done}/${p2.total}` : '';
+  const act = document.getElementById('items-actions'); if (act) act.innerHTML = itemsActions(sh);
+}
+
+/* ---------- גרירה לשינוי סדר הפריטים (כמו בסקר בוואטסאפ) ---------- */
+let drag = null;
+function startDrag(e, grip) {
+  const sh = S.ui.sheet; if (!sh) return;
+  captureDraft();
+  const row = grip.closest('.item-row');
+  const list = row.parentElement;
+  const rows = Array.from(list.children);
+  const from = rows.indexOf(row);
+  const rects = rows.map((r) => r.getBoundingClientRect());
+  const gap = rects.length > 1 ? rects[1].top - rects[0].bottom : 6;
+  drag = { id: e.pointerId, row, rows, from, to: from, rects, gap, startY: e.clientY, dy: 0,
+    scroller: row.closest('.sheet'), scroll0: row.closest('.sheet').scrollTop, raf: 0, lastY: e.clientY };
+  try { grip.setPointerCapture(e.pointerId); } catch (err) { /* */ }
+  row.classList.add('dragging');
+  list.classList.add('sorting');
+  if (navigator.vibrate) { try { navigator.vibrate(10); } catch (err) { /* */ } }
+  e.preventDefault();
+  autoScroll();
+}
+function moveDrag(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  drag.lastY = e.clientY;
+  layoutDrag();
+  e.preventDefault();
+}
+function layoutDrag() {
+  const d = drag;
+  const scrolled = d.scroller.scrollTop - d.scroll0;
+  d.dy = d.lastY - d.startY + scrolled;
+  const h = d.rects[d.from].height + d.gap;
+  const center = d.rects[d.from].top + d.rects[d.from].height / 2 + d.dy;
+  let to = 0;
+  d.rects.forEach((r, i) => { if (i !== d.from && center > r.top + r.height / 2) to++; });
+  if (to > d.from) { /* מתחת למקור – הספירה כבר נכונה */ }
+  d.to = Math.max(0, Math.min(d.rows.length - 1, to));
+  d.row.style.transform = `translateY(${d.dy}px)`;
+  d.rows.forEach((r, i) => {
+    if (i === d.from) return;
+    let shift = 0;
+    if (d.from < d.to && i > d.from && i <= d.to) shift = -h;
+    if (d.from > d.to && i < d.from && i >= d.to) shift = h;
+    r.style.transform = shift ? `translateY(${shift}px)` : '';
+  });
+}
+function autoScroll() {
+  if (!drag) return;
+  const d = drag;
+  const box = d.scroller.getBoundingClientRect();
+  const edge = 70;
+  let v = 0;
+  if (d.lastY < box.top + edge) v = -Math.ceil((box.top + edge - d.lastY) / 6);
+  else if (d.lastY > box.bottom - edge) v = Math.ceil((d.lastY - (box.bottom - edge)) / 6);
+  if (v) { d.scroller.scrollTop += v; layoutDrag(); }
+  d.raf = requestAnimationFrame(autoScroll);
+}
+function endDrag(e) {
+  if (!drag || (e && e.pointerId !== drag.id)) return;
+  const d = drag; drag = null;
+  cancelAnimationFrame(d.raf);
+  const sh = S.ui.sheet;
+  if (sh && d.to !== d.from) {
+    const a = sh.draft.items;
+    const [moved] = a.splice(d.from, 1);
+    a.splice(d.to, 0, moved);
+    if (a[0]) a[0].par = false;
+    saveItemsNow();
+  }
+  refreshItems();
 }
 
 async function suggestSteps() {
@@ -1588,12 +1693,8 @@ document.addEventListener('click', (e) => {
     renderSheet(); return;
   }
   if ((t = el('[data-item-toggle]'))) { toggleItem(Number(t.dataset.itemToggle)); return; }
-  if ((t = el('[data-item-remove]'))) { captureDraft(); S.ui.sheet.draft.items.splice(Number(t.dataset.itemRemove), 1); renderSheet(); return; }
+  if ((t = el('[data-item-remove]'))) { captureDraft(); S.ui.sheet.draft.items.splice(Number(t.dataset.itemRemove), 1); refreshItems(); return; }
   if ((t = el('[data-item-par]'))) { captureDraft(); const it = S.ui.sheet.draft.items[Number(t.dataset.itemPar)]; it.par = !it.par; renderSheet(); return; }
-  if ((t = el('[data-item-up]'))) {
-    captureDraft(); const a = S.ui.sheet.draft.items; const i = Number(t.dataset.itemUp);
-    [a[i - 1], a[i]] = [a[i], a[i - 1]]; if (i - 1 === 0) a[0].par = false; renderSheet(); return;
-  }
   if ((t = el('[data-att-remove]'))) {
     captureDraft(); S.ui.sheet.draft.attachments.splice(Number(t.dataset.attRemove), 1); renderSheet(); return;
   }
@@ -1626,10 +1727,10 @@ document.addEventListener('click', (e) => {
         if (!v) return;
         (sh.draft.items = sh.draft.items || []).push({ id: itemId(), text: v, done: false, par: false });
         sh.itemInput = ''; if (sh.draft.kind === 'project') sh.flowView = false;
-        renderSheet(); const i = document.getElementById('f-item'); if (i) i.focus(); return;
+        refreshItems(); const i = document.getElementById('f-item'); if (i) i.focus(); return;
       }
-      case 'clear-checked': captureDraft(); S.ui.sheet.draft.items = S.ui.sheet.draft.items.filter((x) => !x.done); renderSheet(); return;
-      case 'uncheck-all': captureDraft(); S.ui.sheet.draft.items.forEach((x) => { x.done = false; }); renderSheet(); return;
+      case 'clear-checked': captureDraft(); S.ui.sheet.draft.items = S.ui.sheet.draft.items.filter((x) => !x.done); refreshItems(); return;
+      case 'uncheck-all': captureDraft(); S.ui.sheet.draft.items.forEach((x) => { x.done = false; }); refreshItems(); return;
       case 'ai-steps': suggestSteps(); return;
       case 'flow-view': captureDraft(); S.ui.sheet.flowView = true; renderSheet(); return;
       case 'list-view': captureDraft(); S.ui.sheet.flowView = false; renderSheet(); return;
@@ -1738,6 +1839,14 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.ui.lightbox) { S.ui.lightbox = null; renderLightbox(); return; }
   if (e.key === 'Escape' && S.ui.sheet) closeSheet();
 });
+
+document.addEventListener('pointerdown', (e) => {
+  const g = e.target.closest && e.target.closest('[data-grip]');
+  if (g && S.ui.sheet) startDrag(e, g);
+});
+document.addEventListener('pointermove', moveDrag, { passive: false });
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
 
 window.addEventListener('popstate', () => { if (S.ui.sheet) { S.ui.sheet = null; renderSheet(); } });
 window.addEventListener('hashchange', route);

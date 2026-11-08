@@ -308,7 +308,7 @@ textarea.input { height: auto; min-height: 80px; padding: 12px 14px; resize: ver
 .items { display: flex; flex-direction: column; gap: 6px; }
 .item-row { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 12px; padding: 4px 6px; min-height: 48px; background: var(--card); }
 .item-row.par { margin-right: 22px; border-style: dashed; }
-.item-check { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; border: 2px solid #9CA3AF; background: var(--card); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.item-check { transition: background .15s, border-color .15s, transform .15s; width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; border: 2px solid #9CA3AF; background: var(--card); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
 .item-row.done .item-check { background: var(--ok); border-color: var(--ok); }
 .item-row.done .item-text { text-decoration: line-through; color: var(--muted-2); }
 .item-num { font-size: 12px; color: var(--muted-2); min-width: 16px; text-align: center; }
@@ -372,3 +372,14 @@ textarea.input { height: auto; min-height: 80px; padding: 12px 14px; resize: ver
 .rel-row.done .rel-title { text-decoration: line-through; color: var(--muted-2); }
 .rel-matches { display: flex; flex-direction: column; gap: 4px; }
 .rel-matches button { display: flex; align-items: center; gap: 8px; min-height: 42px; border: 1px dashed #D1D5DB; border-radius: 10px; background: var(--card); padding: 0 12px; text-align: right; font-size: 14px; }
+
+/* גרירת פריטים ברשימה */
+.item-grip { width: 28px; height: 40px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--muted-2); touch-action: none; cursor: grab; margin-inline-end: -4px; -webkit-user-select: none; user-select: none; }
+.items.sorting .item-row { transition: transform .18s ease; }
+.items.sorting .item-row.dragging { transition: none; position: relative; z-index: 5; box-shadow: 0 8px 24px rgba(17, 24, 39, .16); border-color: var(--ink); }
+.items.sorting { -webkit-user-select: none; user-select: none; }
+.item-row { transition: background .15s; }
+.item-row.done .item-text { transition: color .15s; }
+.item-check.pop { animation: check-pop .22s ease; }
+@keyframes check-pop { 0% { transform: scale(.85); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .items.sorting .item-row, .item-check { transition: none; } .item-check.pop { animation: none; } }
