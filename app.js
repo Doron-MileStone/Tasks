@@ -563,6 +563,33 @@ function itemsActions(sh) {
       ${!isProj && p.total ? '<button type="button" class="btn ghost" data-action="uncheck-all">ביטול כל הסימונים</button>' : ''}`;
 }
 
+/** מעדכן רק אזורים מסוימים בטופס (לפי id), בלי לגעת בשדה שהמשתמש עובד עליו. */
+function patchSheet(ids) {
+  const sh = S.ui.sheet;
+  if (!sh || sh.type !== 'task') return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = taskSheet(sh);
+  ids.forEach((id) => {
+    const fresh = tmp.querySelector('#' + id), old = document.getElementById(id);
+    if (old && fresh) old.replaceWith(fresh);
+    else if (old && !fresh) old.remove();
+    else if (!old && fresh) renderSheetLater();
+  });
+}
+let sheetLater = 0;
+/** אזור שצריך להופיע/להיעלם לגמרי – מציירים מחדש רק כשלא עובדים על שדה. */
+function renderSheetLater() {
+  clearTimeout(sheetLater);
+  sheetLater = setTimeout(() => {
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && document.getElementById('sheet-slot').contains(a)) {
+      a.addEventListener('blur', () => setTimeout(() => refreshSheet(), 300), { once: true });
+      return;
+    }
+    refreshSheet();
+  }, 0);
+}
+
 /** עדכון חלק של אזור הפריטים – בלי לצייר מחדש את כל הטופס (בלי "קפיצה"). */
 function refreshItems() {
   const sh = S.ui.sheet;
@@ -1486,15 +1513,15 @@ function taskSheet(sh) {
       ${[me(), otherId(), 'both'].map((u) => `<button type="button" class="${(d.assignee || me()) === u ? 'on' : ''}" data-assignee="${u}" aria-pressed="${(d.assignee || me()) === u}">${esc(nameOf(u))}</button>`).join('')}
     </div><p class="hint">התזכורות יגיעו ל${esc((d.assignee || me()) === 'both' ? 'שניכם' : (d.assignee || me()) === me() ? 'ך' : nameOf(d.assignee))}.</p></div>` : ''}
     <div class="field"><span class="label">מתי</span>
-      <div class="quick">${quick}</div>
+      <div class="quick" id="when-quick">${quick}</div>
       <div class="row2">
         <input class="input" id="f-date" type="date" value="${esc(d.date)}" aria-label="תאריך">
-        <input class="input" id="f-time" type="time" value="${esc(d.time)}" aria-label="שעה" ${d.date ? '' : 'disabled'}>
+        <input class="input" id="f-time" type="time" value="${esc(d.time)}" aria-label="שעה">
       </div></div>
     <div class="field"><span class="label">עדיפות</span><div class="seg">${prios}</div></div>
     ${repeatSection(d)}
     ${remindSection(d)}
-    <div class="box">
+    <div class="box" id="cal-box">
       <div class="switch-row">
         <span class="cal-ico">${icon('cal', 18)}</span>
         <span class="switch-text"><b>הוספה ל-Google Calendar</b><span>${d.date ? 'עם התראה של היומן בטלפון' : 'צריך לבחור תאריך'}</span></span>
@@ -1539,10 +1566,10 @@ function remindSection(d) {
     const override = d.remindAt && d.remindAt.d === today ? d.remindAt.t : '';
     extra = `<p class="hint">${d.remind === 'nag' ? 'התראה בשעת המשימה, וחוזרת כל 5 דקות עד שמסמנים "בוצע" או "הפסק להיום" (עד שעתיים).' : 'התראה אחת בשעת המשימה.'}</p>
       ${d.date === today || override ? `<div class="sub-row box"><label for="f-today-time">רק היום, בשעה אחרת</label>
-        <span class="today-time"><input id="f-today-time" type="time" value="${esc(override)}">${override ? '<button type="button" class="btn ghost" data-action="clear-today">ביטול</button>' : ''}</span></div>` : ''}`;
+        <span class="today-time"><input id="f-today-time" type="time" value="${esc(override)}"><span id="today-clear">${override ? '<button type="button" class="btn ghost" data-action="clear-today">ביטול</button>' : ''}</span></span></div>` : ''}`;
   }
   if (on && !configured()) extra += '<p class="hint warn">תזכורות עובדות רק כשהאפליקציה מחוברת לשרת.</p>';
-  return `<div class="field"><span class="label">${icon('bell', 14)} תזכורת בטלפון</span>
+  return `<div class="field" id="remind-field"><span class="label">${icon('bell', 14)} תזכורת בטלפון</span>
     <div class="seg">${opts.map(([v, l]) => `<button type="button" class="${(d.remind || 'none') === v ? 'on' : ''}" data-remind="${v}" aria-pressed="${(d.remind || 'none') === v}">${l}</button>`).join('')}</div>
     ${extra}</div>`;
 }
@@ -1797,14 +1824,22 @@ document.addEventListener('change', (e) => {
   if (e.target.id === 'f-today-time') {
     captureDraft();
     S.ui.sheet.draft.remindAt = e.target.value ? { d: todayStr(), t: e.target.value } : '';
-    renderSheet(); return;
+    patchSheet(['today-clear']); return;
   }
   if (e.target.id === 'f-dom' || e.target.id === 'f-interval') { captureDraft(); return; }
   if (e.target.id === 'f-date' || e.target.id === 'f-time') {
+    // לא מציירים את כל הטופס מחדש – זה סוגר את בורר השעה בטלפון ו"בולע" את הבחירה
     const d = S.ui.sheet.draft;
     captureDraft();
-    if (!d.date) { d.time = ''; d.calendar = false; }
-    renderSheet();
+    if (e.target.id === 'f-time' && d.time && !d.date) {
+      d.date = todayStr();
+      const di = document.getElementById('f-date'); if (di) di.value = d.date;
+    }
+    if (e.target.id === 'f-date' && !d.date) {
+      d.time = ''; d.calendar = false;
+      const ti = document.getElementById('f-time'); if (ti) ti.value = '';
+    }
+    patchSheet(['when-quick', 'remind-field', 'cal-box']);
   }
 });
 
