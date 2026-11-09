@@ -571,6 +571,7 @@ function patchSheet(ids) {
   tmp.innerHTML = taskSheet(sh);
   ids.forEach((id) => {
     const fresh = tmp.querySelector('#' + id), old = document.getElementById(id);
+    if (old && old.contains(document.activeElement) && document.activeElement !== document.body) { renderSheetLater(); return; }
     if (old && fresh) old.replaceWith(fresh);
     else if (old && !fresh) old.remove();
     else if (!old && fresh) renderSheetLater();
@@ -753,7 +754,7 @@ async function loadComments(id) {
       S.data.commentStats[id] = { n: list.length, last: last.at, lastAuthor: last.author, lastText: last.text.slice(0, 120) };
     }
     save('tm.comments', S.comments);
-    if (S.ui.sheet && S.ui.sheet.draft.id === id) { captureDraft(); renderSheet(); }
+    if (S.ui.sheet && S.ui.sheet.draft.id === id) patchSheet(['chat-section']);
   } catch (err) { /* נשאר עם מה ששמור בטלפון */ }
 }
 
@@ -883,6 +884,12 @@ function openPending() {
 function go(view) { if (location.hash !== '#' + view) location.hash = view; else route(); }
 
 function render() {
+  renderView();
+  refreshSheet();
+}
+
+/** מצייר את המסך שמאחורי הטופס (בלי לגעת בטופס הפתוח). */
+function renderView() {
   const v = S.ui.view;
   const html = v === 'today' ? viewToday() : v === 'calendar' ? viewCalendar() : v === 'ai' ? viewAI() :
     v === 'categories' ? viewCategories() : v === 'threads' ? viewThreads() : viewSettings();
@@ -891,7 +898,6 @@ function render() {
   document.getElementById('fab-slot').innerHTML = ['today', 'calendar', 'categories'].includes(v)
     ? `<button class="fab" data-action="new-task" aria-label="משימה חדשה">${icon('plus', 26, 2.2)}</button>` : '';
   document.getElementById('composer-slot').innerHTML = v === 'ai' ? composerHtml() : '';
-  refreshSheet();
 }
 
 /**
@@ -1427,7 +1433,7 @@ function openSheet(sheet) {
   renderSheet();
   if (sheet.type === 'task' && !sheet.draft._new) {
     markSeen(sheet.draft.id);
-    loadComments(sheet.draft.id).then(() => { if (S.ui.sheet === sheet) { markSeen(sheet.draft.id); render(); } });
+    loadComments(sheet.draft.id).then(() => { if (S.ui.sheet === sheet) { markSeen(sheet.draft.id); renderView(); } });
     if (sheet.focusChat) setTimeout(() => { const c = document.getElementById('chat-section'); if (c) c.scrollIntoView({ block: 'start' }); }, 80);
   }
   setTimeout(() => { const el = document.querySelector('#sheet-slot [autofocus]'); if (el && sheet.focus) el.focus(); }, 60);
@@ -1466,15 +1472,24 @@ function captureDraft() {
   }
 }
 
+function sheetKey(sh) { return sh.type + ':' + ((sh.draft && (sh.draft.id || sh.draft._key)) || ''); }
+
 function renderSheet() {
   const slot = document.getElementById('sheet-slot');
   const sh = S.ui.sheet;
   if (!sh) { slot.innerHTML = ''; document.body.style.overflow = ''; return; }
   document.body.style.overflow = 'hidden';
-  const keepScroll = slot.querySelector('.sheet') ? slot.querySelector('.sheet').scrollTop : 0;
-  slot.innerHTML = `<div class="backdrop" data-action="close-sheet"></div>
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${sh.type === 'task' ? taskSheet(sh) : categorySheet(sh)}</div>`;
-  if (keepScroll) slot.querySelector('.sheet').scrollTop = keepScroll;
+  const inner = sh.type === 'task' ? taskSheet(sh) : categorySheet(sh);
+  const existing = slot.querySelector('.sheet');
+  if (existing && existing.dataset.for === sheetKey(sh)) {
+    // הטופס כבר פתוח – מחליפים רק את התוכן, בלי להריץ שוב את אנימציית הפתיחה (זה ה"רענון" שנראה)
+    const keepScroll = existing.scrollTop;
+    existing.innerHTML = inner;
+    existing.scrollTop = keepScroll;
+  } else {
+    slot.innerHTML = `<div class="backdrop" data-action="close-sheet"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" data-for="${esc(sheetKey(sh))}">${inner}</div>`;
+  }
   hydrateImages();
 }
 
@@ -1524,7 +1539,7 @@ function taskSheet(sh) {
     <div class="box" id="cal-box">
       <div class="switch-row">
         <span class="cal-ico">${icon('cal', 18)}</span>
-        <span class="switch-text"><b>הוספה ל-Google Calendar</b><span>${d.date ? 'עם התראה של היומן בטלפון' : 'צריך לבחור תאריך'}</span></span>
+        <span class="switch-text"><b>הוספה ל-Google Calendar</b><span>${d.date ? calWhere(d) : 'צריך לבחור תאריך'}</span></span>
         <button type="button" class="switch ${d.calendar && d.date ? 'on' : ''}" data-action="toggle-cal" role="switch" aria-checked="${!!(d.calendar && d.date)}" aria-label="הוספה ליומן" ${d.date ? '' : 'disabled'}></button>
       </div>
       ${d.calendar && d.date && d.time ? `<div class="sub-row"><label for="f-reminder">התראה ביומן</label><select id="f-reminder">${reminders}</select></div>` : ''}
@@ -1536,6 +1551,15 @@ function taskSheet(sh) {
     ${chatSection(sh)}
     <button class="btn primary block" data-action="save-task">${d._new ? 'שמירת משימה' : 'שמירת שינויים'}</button>
     ${d._new ? '' : `<button class="btn danger" data-action="delete-task">מחיקת המשימה</button>`}`;
+}
+
+/** איפה יופיע האירוע – כשיש שני משתמשים. */
+function calWhere(d) {
+  if (!S.data.partnerEnabled) return 'עם התראה של היומן בטלפון';
+  const who = isShared(d.category) ? (d.assignee || me()) : me();
+  if (who === 'both') return 'יופיע ביומן של שניכם';
+  if (who === me()) return 'יופיע ביומן שלך';
+  return 'יופיע ביומן של ' + nameOf(who);
 }
 
 function repeatSection(d) {
