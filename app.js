@@ -1750,7 +1750,7 @@ document.addEventListener('click', (e) => {
     captureDraft(); S.ui.sheet.draft.attachments.splice(Number(t.dataset.attRemove), 1); renderSheet(); return;
   }
   if ((t = el('[data-att-view]'))) { S.ui.lightbox = t.dataset.attView; renderLightbox(); return; }
-  if ((t = el('[data-remind]'))) { captureDraft(); S.ui.sheet.draft.remind = t.dataset.remind; renderSheet(); return; }
+  if ((t = el('[data-remind]'))) { captureDraft(); S.ui.sheet.draft.remind = t.dataset.remind; S.ui.sheet.remindTouched = true; renderSheet(); return; }
   if ((t = el('[data-quick-date]'))) {
     captureDraft(); const d = S.ui.sheet.draft; d.date = t.dataset.quickDate;
     if (!d.date) { d.time = ''; d.calendar = false; }
@@ -1854,7 +1854,10 @@ document.addEventListener('change', (e) => {
   if (e.target.id === 'f-date' || e.target.id === 'f-time') {
     // לא מציירים את כל הטופס מחדש – זה סוגר את בורר השעה בטלפון ו"בולע" את הבחירה
     const d = S.ui.sheet.draft;
+    const prevTime = d.time;
     captureDraft();
+    // ברירת מחדל: כשקובעים שעה (למשימה שלא הייתה לה שעה) – מסומנת "התראה", אם לא בחרת בעצמך אחרת
+    if (e.target.id === 'f-time' && d.time && (!prevTime || d._new) && (!d.remind || d.remind === 'none') && !S.ui.sheet.remindTouched) d.remind = 'notify';
     if (e.target.id === 'f-time' && d.time && !d.date) {
       d.date = todayStr();
       const di = document.getElementById('f-date'); if (di) di.value = d.date;
